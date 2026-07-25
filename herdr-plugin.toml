@@ -1,6 +1,6 @@
 id = "herdr-command-center"
 name = "Herdr Command Center"
-version = "0.3.0"
+version = "0.4.1"
 min_herdr_version = "0.7.0"
 description = "Stream workspace and agent telemetry to your own endpoint"
 platforms = ["linux", "macos"]
