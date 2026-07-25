@@ -1,0 +1,41 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Verify tag matches VERSION
+        run: |
+          want="v$(tr -d ' \t\r\n' < VERSION)"
+          if [ "${GITHUB_REF_NAME}" != "$want" ]; then
+            echo "tag ${GITHUB_REF_NAME} != VERSION file ($want)" >&2
+            exit 1
+          fi
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            out="dist/herdr-telemetry_${os}_${arch}"
+            echo "building $out"
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "-s -w" -o "$out" .
+          done
+          cd dist && shasum -a 256 herdr-telemetry_* > checksums.txt && cat checksums.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --title "${GITHUB_REF_NAME}" --generate-notes

@@ -1,0 +1,168 @@
+package wsserver
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/DIodide/herdr-telemetry/internal/collector"
+	"github.com/DIodide/herdr-telemetry/internal/config"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+)
+
+func TestWebSocketAuthSnapshotAndDelete(t *testing.T) {
+	if _, err := New(config.WebSocket{Enabled: true, Listen: "127.0.0.1:0", Path: "/events"}); err == nil {
+		t.Fatal("enabled server accepted an empty token")
+	}
+	s, err := New(config.WebSocket{Enabled: true, Listen: "127.0.0.1:0", Path: "/events", AuthToken: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	url := "ws://" + s.Addr() + "/events"
+	if resp, err := http.Get("http://" + s.Addr() + "/wrong"); err != nil || resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("wrong path: err=%v response=%v", err, resp)
+	} else {
+		resp.Body.Close()
+	}
+
+	if _, resp, err := websocket.Dial(ctx, url, nil); err == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("missing token: err=%v response=%v", err, resp)
+	}
+	bad := http.Header{"Authorization": {"Bearer wrong"}}
+	if _, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: bad}); err == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bad token: err=%v response=%v", err, resp)
+	}
+
+	s.Publish(collector.Event{V: 1, Kind: "agent.seen", TS: time.Now().Format(time.RFC3339Nano), PaneID: "p1", Harness: "claude", Status: "working"})
+	time.Sleep(10 * time.Millisecond)
+	good := http.Header{"Authorization": {"Bearer secret"}}
+	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: good})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	var msg Message
+	if err := readJSON(ctx, conn, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.Type != "agent.added" || msg.AgentID != "p1:claude" || msg.Agent.Status != "working" {
+		t.Fatalf("unexpected snapshot: %+v", msg)
+	}
+
+	s.Publish(collector.Event{V: 1, Kind: "agent.gone", TS: time.Now().Format(time.RFC3339Nano), PaneID: "p1", Harness: "claude", Status: "unknown"})
+	if err := readJSON(ctx, conn, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.Type != "agent.deleted" {
+		t.Fatalf("unexpected delete: %+v", msg)
+	}
+	shutdown, shutdownCancel := context.WithTimeout(context.Background(), time.Second)
+	defer shutdownCancel()
+	if err := s.Close(shutdown); err != nil {
+		t.Fatal(err)
+	}
+	readCtx, readCancel := context.WithTimeout(context.Background(), time.Second)
+	defer readCancel()
+	if _, _, err := conn.Read(readCtx); websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+		t.Fatalf("expected normal server closure, got %v", err)
+	}
+}
+
+func TestPublishDoesNotBlockOrLoseStateWhenHubIsFull(t *testing.T) {
+	s, err := New(config.WebSocket{Enabled: true, Listen: "127.0.0.1:0", Path: "/events", AuthToken: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	for i := range cap(s.publish) + 1 {
+		s.Publish(collector.Event{Kind: "agent.seen", PaneID: fmt.Sprintf("p%d", i), Harness: "codex"})
+	}
+	if time.Since(started) > 100*time.Millisecond {
+		t.Fatal("Publish blocked on a full hub")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	conn, _, err := websocket.Dial(ctx, "ws://"+s.Addr()+"/events", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer secret"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	want := fmt.Sprintf("p%d:codex", cap(s.publish))
+	for range cap(s.publish) + 1 {
+		var msg Message
+		if err := readJSON(ctx, conn, &msg); err != nil {
+			t.Fatal(err)
+		}
+		if msg.AgentID == want {
+			return
+		}
+	}
+	t.Fatalf("snapshot lost latest agent %s", want)
+}
+
+func TestSnapshotLargerThanClientBuffer(t *testing.T) {
+	s, _ := New(config.WebSocket{Enabled: true, Listen: "127.0.0.1:0", Path: "/events", AuthToken: "secret"})
+	for i := range 65 {
+		s.Publish(collector.Event{Kind: "agent.seen", PaneID: fmt.Sprintf("p%d", i), Harness: "codex"})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	conn, _, err := websocket.Dial(ctx, "ws://"+s.Addr()+"/events", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer secret"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	for range 65 {
+		var msg Message
+		if err := readJSON(ctx, conn, &msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestApplyMergesAndDoesNotResurrectDeletedAgent(t *testing.T) {
+	agents := map[string]Agent{}
+	added, ok := apply(agents, collector.Event{Kind: "agent.seen", PaneID: "p", Harness: "codex", Status: "working"})
+	if !ok || added.Type != "agent.added" {
+		t.Fatalf("unexpected add: %+v", added)
+	}
+	updated, ok := apply(agents, collector.Event{Kind: "run.finished", PaneID: "p", Harness: "codex", RunDurationMS: 5, TokensIn: 12, TokensOut: 6})
+	if !ok || updated.Type != "agent.updated" || updated.Agent.TokensIn != 12 {
+		t.Fatalf("unexpected update: %+v", updated)
+	}
+	started, ok := apply(agents, collector.Event{Kind: "run.started", PaneID: "p", Harness: "codex"})
+	if !ok || started.Agent.RunDurationMS != 0 || started.Agent.TokensIn != 0 || started.Agent.TokensOut != 0 {
+		t.Fatalf("run start retained previous metrics: %+v", started)
+	}
+	finished, ok := apply(agents, collector.Event{Kind: "run.finished", PaneID: "p", Harness: "codex"})
+	if !ok || finished.Agent.RunDurationMS != 0 || finished.Agent.TokensIn != 0 || finished.Agent.TokensOut != 0 {
+		t.Fatalf("zero run metrics were not applied: %+v", finished)
+	}
+	deleted, _ := apply(agents, collector.Event{Kind: "agent.gone", PaneID: "p", Harness: "codex"})
+	if deleted.Type != "agent.deleted" || deleted.Agent.Status != "unknown" {
+		t.Fatalf("unexpected delete: %+v", deleted)
+	}
+	if _, ok := apply(agents, collector.Event{Kind: "run.finished", PaneID: "p", Harness: "codex"}); ok {
+		t.Fatal("run event resurrected deleted agent")
+	}
+}
+
+func readJSON(ctx context.Context, conn *websocket.Conn, dst any) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	return wsjson.Read(ctx, conn, dst)
+}

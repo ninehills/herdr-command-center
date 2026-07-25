@@ -1,0 +1,54 @@
+id = "herdr-telemetry"
+name = "Herdr Telemetry"
+version = "0.3.0"
+min_herdr_version = "0.7.0"
+description = "Stream workspace and agent telemetry to your own endpoint"
+platforms = ["linux", "macos"]
+
+[[build]]
+# fetches a prebuilt release binary (no Go toolchain required) and falls
+# back to `go build` for local dev / unreleased platforms
+command = ["sh", "scripts/fetch-or-build.sh"]
+
+# the daemon is a singleton — every hook is a cheap no-op when it's alive
+[[events]]
+on = "workspace.created"
+command = ["bin/herdr-telemetry", "ensure-daemon"]
+
+[[events]]
+on = "pane.created"
+command = ["bin/herdr-telemetry", "ensure-daemon"]
+
+[[events]]
+on = "worktree.created"
+command = ["bin/herdr-telemetry", "ensure-daemon"]
+
+[[actions]]
+id = "start"
+title = "Telemetry: start daemon"
+command = ["bin/herdr-telemetry", "ensure-daemon"]
+
+[[actions]]
+id = "status"
+title = "Telemetry: status"
+command = ["bin/herdr-telemetry", "status"]
+
+[[actions]]
+id = "flush"
+title = "Telemetry: flush now"
+command = ["bin/herdr-telemetry", "flush"]
+
+[[actions]]
+id = "test-endpoint"
+title = "Telemetry: send test event"
+command = ["bin/herdr-telemetry", "test"]
+
+[[actions]]
+id = "check-update"
+title = "Telemetry: check for updates"
+command = ["bin/herdr-telemetry", "check-update"]
+
+[[actions]]
+id = "stop"
+title = "Telemetry: stop daemon"
+command = ["bin/herdr-telemetry", "stop"]

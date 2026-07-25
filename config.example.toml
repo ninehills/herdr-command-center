@@ -1,0 +1,75 @@
+# herdr-telemetry configuration
+# Copy to: $(herdr plugin config-dir herdr-telemetry)/config.toml
+# Every value shown is the default unless noted.
+
+[endpoint]
+url = ""                    # REQUIRED — where batches are POSTed (ndjson)
+auth_token = ""             # sent as "Authorization: Bearer <token>"
+timeout_ms = 5000
+# headers = { "X-Source" = "herdr" }   # extra headers, optional
+
+# Optional authenticated live agent stream. The token is required when enabled.
+[websocket]
+enabled = false
+listen = "127.0.0.1:9745"
+path = "/events"
+auth_token = ""
+
+[send]
+flush_interval_ms = 15000   # how often batches ship
+max_batch = 200             # events per POST
+max_buffer_events = 2000    # in-memory cap; oldest drop beyond this
+max_spool_mb = 5            # on-disk backlog cap while endpoint is down
+gzip = true
+
+[collect]
+poll_interval_ms = 5000     # agent poll while any agent is working
+idle_poll_interval_ms = 30000  # agent poll while everything is idle
+workspaces = true           # workspace created/renamed/closed
+tabs = true                 # tab created/renamed/closed
+panes = true                # pane created/closed/exited
+agents = true               # agent seen/gone + status transitions
+runs = true                 # derived run.started / run.finished events
+worktrees = true            # worktree created/opened/removed
+repo = true                 # git repo (root/name/branch/worktree) on agent
+                            #   & snapshot events. Path/name/branch inherit
+                            #   the include_cwd redaction level below.
+focus_events = false        # workspace.focused is noisy; off by default
+focus_intervals = false     # completed focus.interval + focus.changed events
+                            #   (which pane the USER is looking at, and for how
+                            #   long). Opt-in: reveals attention patterns.
+snapshot_interval_ms = 900000  # full-state snapshot every 15m (0 disables)
+min_run_ms = 30000          # runs shorter than this are ignored
+replay_grace_ms = 2000      # subscribe-time state replay suppression window
+session_usage = true        # model id + per-run token counters from harness
+                            # session files (counters only, never content;
+                            # claude reads forward from attach, codex reads a
+                            # bounded tail)
+
+[privacy]
+include_cwd = false         # working directories are OFF by default. Also
+                            #   governs collect.repo: when off, repo_root is
+                            #   emitted as a stable "sha256:" hash and repo
+                            #   name/branch are suppressed; when on, repo_root
+                            #   is home-relative and name/branch pass through.
+include_labels = true       # workspace/tab labels (often project names)
+hash_host = true            # hostname is sent as a short hash
+workspace_allowlist = []    # empty = all workspaces
+workspace_denylist = []     # labels to never report, e.g. ["secret-project"]
+
+[update]
+enabled = true              # check GitHub for newer releases
+auto_apply = true           # re-install + restart when a newer release exists
+check_interval_hours = 6
+repo = "ninehills/herdr-command-center"  # source repo (change for a fork)
+
+[notify]
+enabled = true              # herdr toast notifications for daemon health
+on_start = true             # daemon started
+on_degraded = true          # lost the herdr socket
+on_recovered = true         # herdr socket back
+on_endpoint = true          # telemetry endpoint went down / came back
+on_update = true            # an update is available / was applied
+position = "bottom-right"
+# NOTE: toasts only render if herdr's own [ui.toast] delivery is enabled
+# (herdr config.toml: [ui.toast] delivery = "herdr"|"terminal"|"system").
