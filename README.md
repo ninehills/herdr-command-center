@@ -281,7 +281,12 @@ live per-run token counters (input/output/cache read/cache write) and model
 on every poll tick they change; these frames are observer-only and are never
 sent to the remote endpoint. `watch` uses a zero-dependency ANSI table with a
 cache-hit-rate column, reconnects after network failures, and exits with
-`Ctrl-C`.
+`Ctrl-C`. Every `collect.snapshot_interval_ms` (default 15 minutes) the hub
+also reconciles against the collector's authoritative full state and
+broadcasts one `type: "snapshot"` frame carrying the entire agent map —
+clients replace their local state wholesale, so panels converge even if
+individual frames were lost. Lower the interval (e.g. `60000` for 60s) when
+you want faster convergence.
 
 ## CLI
 

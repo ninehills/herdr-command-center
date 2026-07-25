@@ -2,6 +2,7 @@ package wsserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -212,5 +213,44 @@ func TestApplyRunUsageSession(t *testing.T) {
 	msg2, _ := apply(agents, collector.Event{Kind: "agent.status_changed", PaneID: "p", Harness: "pi", Status: "idle"})
 	if msg2.Agent.Session == nil || msg2.Agent.Session.In != 323000 {
 		t.Fatalf("session lost: %+v", msg2.Agent)
+	}
+}
+
+func TestFullSync(t *testing.T) {
+	s := &Server{agents: map[string]Agent{}, publish: make(chan []byte, 4)}
+	s.agents["p1:pi"] = Agent{Name: "pi", Harness: "pi", Status: "working", PaneID: "p1"}
+	s.agents["ghost:pi"] = Agent{Name: "pi", Harness: "pi", Status: "idle", PaneID: "ghost"}
+
+	detail := `{"workspaces":[],"agents":[{"pane":"p1","ws":"w1","harness":"pi","status":"idle"},{"pane":"p2","ws":"w1","harness":"pi","status":"working"}]}`
+	s.fullSync(detail)
+
+	if len(s.agents) != 2 {
+		t.Fatalf("agents after fullSync: %+v", s.agents)
+	}
+	if s.agents["p1:pi"].Status != "idle" {
+		t.Fatalf("stale status not updated: %+v", s.agents["p1:pi"])
+	}
+	if _, ok := s.agents["p2:pi"]; !ok {
+		t.Fatal("missing agent not added")
+	}
+	if _, ok := s.agents["ghost:pi"]; ok {
+		t.Fatal("ghost agent not deleted")
+	}
+
+	// exactly one full-state frame
+	select {
+	case b := <-s.publish:
+		var m Message
+		if json.Unmarshal(b, &m) != nil || m.Type != "snapshot" || len(m.Agents) != 2 {
+			t.Fatalf("bad snapshot frame: %s", b)
+		}
+	default:
+		t.Fatal("no snapshot frame broadcast")
+	}
+
+	// invalid detail is ignored
+	s.fullSync("not json")
+	if len(s.agents) != 2 {
+		t.Fatal("invalid detail corrupted state")
 	}
 }

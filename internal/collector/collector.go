@@ -894,6 +894,11 @@ func (c *Collector) snapshot() {
 	ev := c.base("snapshot")
 	ev.Detail = string(detail)
 	c.out.Enqueue(ev)
+	// the hub reconciles its agent map against this authoritative snapshot,
+	// so WS clients converge even if individual events were lost
+	if c.observer != nil {
+		c.observer(ev)
+	}
 }
 
 // ── lifecycle event stream ───────────────────────────────────────────

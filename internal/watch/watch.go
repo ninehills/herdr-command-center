@@ -53,12 +53,13 @@ type agent struct {
 }
 
 type message struct {
-	V          int    `json:"v"`
-	Type       string `json:"type"`
-	Timestamp  string `json:"timestamp"`
-	AgentID    string `json:"agent_id"`
-	SourceKind string `json:"source_kind"`
-	Agent      agent  `json:"agent"`
+	V          int              `json:"v"`
+	Type       string           `json:"type"`
+	Agents     map[string]agent `json:"agents"` // full state (type=snapshot)
+	Timestamp  string           `json:"timestamp"`
+	AgentID    string           `json:"agent_id"`
+	SourceKind string           `json:"source_kind"`
+	Agent      agent            `json:"agent"`
 }
 
 type update struct {
@@ -252,9 +253,14 @@ func drawLoop(ctx context.Context, w io.Writer, endpoint string, updates <-chan 
 				agents = map[string]agent{}
 			}
 			if u.message != nil {
-				applyMessage(agents, *u.message)
-				if u.message.SourceKind != "run.usage" { // too frequent for the log; table still updates
-					events = appendEvent(events, formatEvent(*u.message))
+				if u.message.Type == "snapshot" && u.message.Agents != nil {
+					agents = u.message.Agents // authoritative full refresh
+					events = appendEvent(events, time.Now().Format("15:04:05")+fmt.Sprintf("  -- full refresh (%d agents) --", len(agents)))
+				} else {
+					applyMessage(agents, *u.message)
+					if u.message.SourceKind != "run.usage" { // too frequent for the log; table still updates
+						events = appendEvent(events, formatEvent(*u.message))
+					}
 				}
 				updated = time.Now()
 			}

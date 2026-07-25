@@ -44,12 +44,13 @@ type Agent struct {
 }
 
 type Message struct {
-	V          int    `json:"v"`
-	Type       string `json:"type"`
-	Timestamp  string `json:"timestamp"`
-	SourceKind string `json:"source_kind"`
-	AgentID    string `json:"agent_id"`
-	Agent      Agent  `json:"agent"`
+	V          int              `json:"v"`
+	Type       string           `json:"type"`
+	Timestamp  string           `json:"timestamp"`
+	SourceKind string           `json:"source_kind"`
+	AgentID    string           `json:"agent_id"`
+	Agent      Agent            `json:"agent"`
+	Agents     map[string]Agent `json:"agents,omitempty"` // full state (type=snapshot)
 }
 
 type client struct{ send chan []byte }
@@ -111,17 +112,65 @@ func (s *Server) Publish(ev collector.Event) {
 	if s == nil {
 		return
 	}
+	if ev.Kind == "snapshot" {
+		s.fullSync(ev.Detail)
+		return
+	}
 	s.mu.Lock()
 	msg, ok := apply(s.agents, ev)
 	s.mu.Unlock()
 	if !ok {
 		return
 	}
+	s.broadcast(msg)
+}
+
+func (s *Server) broadcast(msg Message) {
 	b, _ := json.Marshal(msg)
 	select {
 	case s.publish <- b:
 	default:
 	}
+}
+
+// fullSync handles the collector's periodic authoritative snapshot: the hub
+// map is repaired (missing agents added, stale statuses updated, ghosts
+// deleted) and the ENTIRE map is broadcast as one snapshot frame — clients
+// just replace their local state, so panels always converge.
+func (s *Server) fullSync(detail string) {
+	var payload struct {
+		Agents []struct {
+			Pane    string `json:"pane"`
+			WS      string `json:"ws"`
+			Harness string `json:"harness"`
+			Status  string `json:"status"`
+		} `json:"agents"`
+	}
+	if json.Unmarshal([]byte(detail), &payload) != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	want := make(map[string]bool, len(payload.Agents))
+	for _, sa := range payload.Agents {
+		if sa.Pane == "" || sa.Harness == "" {
+			continue
+		}
+		id := sa.Pane + ":" + sa.Harness
+		want[id] = true
+		if a, exists := s.agents[id]; !exists {
+			s.agents[id] = Agent{Name: sa.Harness, Harness: sa.Harness, Status: sa.Status, WorkspaceID: sa.WS, PaneID: sa.Pane}
+		} else if sa.Status != "" && a.Status != sa.Status {
+			a.Status = sa.Status
+			s.agents[id] = a
+		}
+	}
+	for id := range s.agents {
+		if !want[id] {
+			delete(s.agents, id)
+		}
+	}
+	s.broadcast(Message{V: 1, Type: "snapshot", Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Agents: s.agents})
 }
 
 func (s *Server) Close(ctx context.Context) error {
