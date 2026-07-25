@@ -276,8 +276,12 @@ or `agent.deleted`, plus `source_kind`, `agent_id`, and the privacy-shaped
 agent state. New clients first receive the hub's current agents as
 `agent.added` snapshots. Updates follow the collector poll cadence (5 seconds
 while working and 30 seconds while idle by default), rather than bypassing the
-collector. `watch` uses a zero-dependency ANSI table, reconnects after network
-failures, and exits with `Ctrl-C`.
+collector. While a run is open, `source_kind: run.usage` frames stream the
+live per-run token counters (input/output/cache read/cache write) and model
+on every poll tick they change; these frames are observer-only and are never
+sent to the remote endpoint. `watch` uses a zero-dependency ANSI table with a
+cache-hit-rate column, reconnects after network failures, and exits with
+`Ctrl-C`.
 
 ## CLI
 

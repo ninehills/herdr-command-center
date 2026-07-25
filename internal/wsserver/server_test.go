@@ -11,6 +11,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/ninehills/herdr-command-center/internal/collector"
 	"github.com/ninehills/herdr-command-center/internal/config"
+	"github.com/ninehills/herdr-command-center/internal/harness"
 )
 
 func TestWebSocketAuthSnapshotAndDelete(t *testing.T) {
@@ -140,12 +141,12 @@ func TestApplyMergesAndDoesNotResurrectDeletedAgent(t *testing.T) {
 	if !ok || added.Type != "agent.added" {
 		t.Fatalf("unexpected add: %+v", added)
 	}
-	updated, ok := apply(agents, collector.Event{Kind: "run.finished", PaneID: "p", Harness: "codex", RunDurationMS: 5, TokensIn: 12, TokensOut: 6})
-	if !ok || updated.Type != "agent.updated" || updated.Agent.TokensIn != 12 {
+	updated, ok := apply(agents, collector.Event{Kind: "run.finished", PaneID: "p", Harness: "codex", RunDurationMS: 5, TokensIn: 12, TokensOut: 6, TokensCacheR: 40, TokensCacheW: 3})
+	if !ok || updated.Type != "agent.updated" || updated.Agent.TokensIn != 12 || updated.Agent.TokensCacheR != 40 || updated.Agent.TokensCacheW != 3 {
 		t.Fatalf("unexpected update: %+v", updated)
 	}
 	started, ok := apply(agents, collector.Event{Kind: "run.started", PaneID: "p", Harness: "codex"})
-	if !ok || started.Agent.RunDurationMS != 0 || started.Agent.TokensIn != 0 || started.Agent.TokensOut != 0 {
+	if !ok || started.Agent.RunDurationMS != 0 || started.Agent.TokensIn != 0 || started.Agent.TokensOut != 0 || started.Agent.TokensCacheR != 0 || started.Agent.TokensCacheW != 0 {
 		t.Fatalf("run start retained previous metrics: %+v", started)
 	}
 	finished, ok := apply(agents, collector.Event{Kind: "run.finished", PaneID: "p", Harness: "codex"})
@@ -165,4 +166,51 @@ func readJSON(ctx context.Context, conn *websocket.Conn, dst any) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	return wsjson.Read(ctx, conn, dst)
+}
+
+func TestApplyRunUsage(t *testing.T) {
+	agents := map[string]Agent{}
+	apply(agents, collector.Event{Kind: "agent.seen", PaneID: "p", Harness: "codex", Status: "working"})
+	apply(agents, collector.Event{Kind: "run.started", PaneID: "p", Harness: "codex", Model: "gpt-5.5"})
+
+	// live delta during the run: tokens grow, duration advances
+	live, ok := apply(agents, collector.Event{Kind: "run.usage", PaneID: "p", Harness: "codex", Model: "gpt-5.5", RunDurationMS: 8000, TokensIn: 100, TokensOut: 20, TokensCacheR: 300})
+	if !ok || live.Type != "agent.updated" || live.Agent.TokensIn != 100 || live.Agent.TokensCacheR != 300 || live.Agent.RunDurationMS != 8000 {
+		t.Fatalf("live run.usage not applied: %+v", live)
+	}
+
+	apply(agents, collector.Event{Kind: "run.finished", PaneID: "p", Harness: "codex", RunDurationMS: 9000, TokensIn: 120, TokensOut: 25, TokensCacheR: 320})
+
+	// trailing delta after a late session-file flush: tokens update, the
+	// finished duration is kept (trailing events carry no duration)
+	trailing, ok := apply(agents, collector.Event{Kind: "run.usage", PaneID: "p", Harness: "codex", TokensIn: 150, TokensOut: 30, TokensCacheR: 350})
+	if !ok || trailing.Agent.TokensIn != 150 || trailing.Agent.TokensCacheR != 350 {
+		t.Fatalf("trailing run.usage not applied: %+v", trailing)
+	}
+	if trailing.Agent.RunDurationMS != 9000 {
+		t.Fatalf("trailing run.usage wiped duration: %+v", trailing.Agent)
+	}
+
+	// run.usage for an unknown agent is dropped like other run.* events
+	if _, ok := apply(agents, collector.Event{Kind: "run.usage", PaneID: "ghost", Harness: "pi", TokensIn: 1}); ok {
+		t.Fatal("run.usage resurrected an unknown agent")
+	}
+}
+
+func TestApplyRunUsageSession(t *testing.T) {
+	agents := map[string]Agent{}
+	apply(agents, collector.Event{Kind: "agent.seen", PaneID: "p", Harness: "pi", Status: "working"})
+	stats := harness.SessionStats{In: 323000, Out: 61000, CacheRead: 6800000, CostUSD: 3.913, CacheHit: 99.7, ContextTokens: 109000, ContextWindow: 1000000}
+	msg, ok := apply(agents, collector.Event{Kind: "run.usage", PaneID: "p", Harness: "pi", TokensIn: 5, Session: &stats})
+	if !ok || msg.Agent.Session == nil {
+		t.Fatalf("session not merged: %+v", msg.Agent)
+	}
+	if msg.Agent.Session.CacheHit != 99.7 || msg.Agent.Session.ContextWindow != 1000000 || msg.Agent.Session.CostUSD != 3.913 {
+		t.Fatalf("session fields wrong: %+v", msg.Agent.Session)
+	}
+	// a later event without session must keep the last one
+	msg2, _ := apply(agents, collector.Event{Kind: "agent.status_changed", PaneID: "p", Harness: "pi", Status: "idle"})
+	if msg2.Agent.Session == nil || msg2.Agent.Session.In != 323000 {
+		t.Fatalf("session lost: %+v", msg2.Agent)
+	}
 }

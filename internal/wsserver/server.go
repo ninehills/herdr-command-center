@@ -16,6 +16,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/ninehills/herdr-command-center/internal/collector"
 	"github.com/ninehills/herdr-command-center/internal/config"
+	"github.com/ninehills/herdr-command-center/internal/harness"
 )
 
 type Agent struct {
@@ -36,6 +37,10 @@ type Agent struct {
 	RunDurationMS  int64  `json:"run_duration_ms,omitempty"`
 	TokensIn       int64  `json:"tokens_in,omitempty"`
 	TokensOut      int64  `json:"tokens_out,omitempty"`
+	TokensCacheR   int64  `json:"tokens_cache_read,omitempty"`
+	TokensCacheW   int64  `json:"tokens_cache_write,omitempty"`
+	// Session-cumulative stats for the live panel (pi-status-bar parity)
+	Session *harness.SessionStats `json:"session,omitempty"`
 }
 
 type Message struct {
@@ -217,11 +222,30 @@ func apply(agents map[string]Agent, ev collector.Event) (Message, bool) {
 	case "run.started":
 		a.Model = ev.Model
 		a.RunStartedAt = ev.RunStartedAt
-		a.RunDurationMS, a.TokensIn, a.TokensOut = 0, 0, 0
+		a.RunDurationMS, a.TokensIn, a.TokensOut, a.TokensCacheR, a.TokensCacheW = 0, 0, 0, 0, 0
 	case "run.finished":
 		a.Model = ev.Model
 		a.RunStartedAt = ev.RunStartedAt
 		a.RunDurationMS, a.TokensIn, a.TokensOut = ev.RunDurationMS, ev.TokensIn, ev.TokensOut
+		a.TokensCacheR, a.TokensCacheW = ev.TokensCacheR, ev.TokensCacheW
+		if ev.Session != nil {
+			s := *ev.Session
+			a.Session = &s
+		}
+	case "run.usage":
+		// live/trailing deltas: trailing updates carry no duration — keep
+		// the one run.finished recorded
+		merge(&a.Model, ev.Model)
+		merge(&a.RunStartedAt, ev.RunStartedAt)
+		if ev.RunDurationMS > 0 {
+			a.RunDurationMS = ev.RunDurationMS
+		}
+		a.TokensIn, a.TokensOut = ev.TokensIn, ev.TokensOut
+		a.TokensCacheR, a.TokensCacheW = ev.TokensCacheR, ev.TokensCacheW
+		if ev.Session != nil {
+			s := *ev.Session
+			a.Session = &s
+		}
 	}
 	typ := "agent.updated"
 	if !exists {

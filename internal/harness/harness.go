@@ -1,5 +1,5 @@
 // Package harness extracts token COUNTERS and the model id from coding-agent
-// session files (Claude Code, Codex). This is the one collector that touches
+// session files (Claude Code, Pi). This is the one collector that touches
 // harness-owned files, so its contract is strict:
 //
 //   - only structural fields are decoded: usage counters, model id, cwd.
@@ -7,8 +7,8 @@
 //   - Claude readers attach at the CURRENT END of the session file and count
 //     forward — historical lines are never parsed, and per-run deltas (the
 //     only thing telemetry reports) are exact either way.
-//   - every read is bounded: Codex reads a fixed-size tail; Claude reads only
-//     bytes appended since the last poll.
+//   - every read is bounded: Claude/Pi read only bytes appended since the
+//     last poll (Pi additionally parses the file once at attach).
 //
 // Gated by collect.session_usage.
 package harness
@@ -45,31 +45,71 @@ func (u Usage) Sub(v Usage) Usage {
 
 func (u Usage) IsZero() bool { return u == Usage{} }
 
+// SessionStats is a session-cumulative snapshot for live display, mirroring
+// what the harness's own status bar shows (e.g. pi's footer):
+// ↑input ↓output R<cache-read> W<cache-write> CH<latest-request hit rate>
+// $<cost> <context%>/<window>. Fields a harness file can't provide stay zero.
+type SessionStats struct {
+	In            int64   `json:"in"`
+	Out           int64   `json:"out"`
+	CacheRead     int64   `json:"cache_read"`
+	CacheWrite    int64   `json:"cache_write"`
+	CostUSD       float64 `json:"cost_usd"`
+	CacheHit      float64 `json:"cache_hit"` // latest request, percent
+	ContextTokens int64   `json:"context_tokens"`
+	ContextWindow int64   `json:"context_window"`
+}
+
 // Tracker follows one agent's session file.
 type Tracker interface {
 	// Refresh advances the counters; cheap enough for every poll tick.
 	Refresh()
-	// Usage returns the current counter snapshot.
+	// Usage returns the current counter snapshot (counters since attach for
+	// append-style trackers; run deltas are measured off this).
 	Usage() Usage
+	// Session returns session-cumulative stats for display.
+	Session() SessionStats
 	// Model returns the last-seen model id ("" if unknown yet).
 	Model() string
+	// Path returns the tracked session file (for claim bookkeeping).
+	Path() string
 }
 
 // Attach locates the live session file for a harness+cwd and returns a
-// tracker, or nil if no fresh session file could be found.
-func Attach(harnessName, cwd string, home string) Tracker {
+// tracker, or nil if no fresh session file could be found. skip lists
+// session files already claimed by other agents (two agents can share a
+// cwd; each must read its own file).
+func Attach(harnessName, cwd string, home string, skip map[string]bool) Tracker {
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
 	switch harnessName {
 	case "claude":
-		if p := locateClaude(home, cwd); p != "" {
+		if p := locateClaude(home, cwd, skip); p != "" {
 			return newClaudeTracker(p)
 		}
-	case "codex":
-		if p := locateCodex(home, cwd); p != "" {
-			return newCodexTracker(p)
+	case "pi":
+		if p := locatePi(home, cwd, skip); p != "" {
+			return newPiTracker(p, home)
 		}
+	}
+	return nil
+}
+
+// AttachPath binds a tracker to an explicit session file (reported by
+// herdr's agent integration) — an exact match, no locating or claims.
+func AttachPath(harnessName, path, home string) Tracker {
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil // herdr can report a session file that doesn't exist (yet/anymore)
+	}
+	switch harnessName {
+	case "claude":
+		return newClaudeTracker(path)
+	case "pi":
+		return newPiTracker(path, home)
 	}
 	return nil
 }
@@ -87,7 +127,7 @@ func claudeProjectDir(home, cwd string) string {
 	return filepath.Join(home, ".claude", "projects", nonAlnum.ReplaceAllString(cwd, "-"))
 }
 
-func locateClaude(home, cwd string) string {
+func locateClaude(home, cwd string, skip map[string]bool) string {
 	dir := claudeProjectDir(home, cwd)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -103,9 +143,10 @@ func locateClaude(home, cwd string) string {
 		if err != nil {
 			continue
 		}
-		if info.ModTime().After(bestMod) {
+		p := filepath.Join(dir, e.Name())
+		if info.ModTime().After(bestMod) && !skip[p] {
 			bestMod = info.ModTime()
-			best = filepath.Join(dir, e.Name())
+			best = p
 		}
 	}
 	if best == "" || time.Since(bestMod) > freshWindow {
@@ -202,51 +243,72 @@ func (t *claudeTracker) Refresh() {
 
 func (t *claudeTracker) Usage() Usage  { return t.usage }
 func (t *claudeTracker) Model() string { return t.model }
+func (t *claudeTracker) Path() string  { return t.path }
 
-// ── codex ────────────────────────────────────────────────────────────
+// Session: claude attaches at EOF, so only post-attach counters are known.
+func (t *claudeTracker) Session() SessionStats {
+	return SessionStats{In: t.usage.In, Out: t.usage.Out, CacheRead: t.usage.CacheRead, CacheWrite: t.usage.CacheWrite}
+}
 
-func locateCodex(home, cwd string) string {
-	base := filepath.Join(home, ".codex", "sessions")
-	// today and yesterday (rollouts are date-bucketed local time)
-	days := []time.Time{time.Now(), time.Now().AddDate(0, 0, -1)}
-	var candidates []string
-	for _, d := range days {
-		dir := filepath.Join(base, d.Format("2006"), d.Format("01"), d.Format("02"))
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if !e.IsDir() && filepath.Ext(e.Name()) == ".jsonl" {
-				candidates = append(candidates, filepath.Join(dir, e.Name()))
-			}
-		}
+// ── pi ───────────────────────────────────────────────────────────────
+
+// Pi sessions live in ~/.pi/agent/sessions/<munged-cwd>/<ts>_<uuid>.jsonl.
+// The munging is not relied on: the newest fresh file of every session dir
+// is probed for a first-line cwd match instead.
+func locatePi(home, cwd string, skip map[string]bool) string {
+	base := filepath.Join(home, ".pi", "agent", "sessions")
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return ""
 	}
 	type cand struct {
 		path string
 		mod  time.Time
 	}
 	var fresh []cand
-	for _, p := range candidates {
-		if info, err := os.Stat(p); err == nil && time.Since(info.ModTime()) <= freshWindow {
-			fresh = append(fresh, cand{p, info.ModTime()})
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(base, e.Name())
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		var best string
+		var bestMod time.Time
+		for _, fe := range files {
+			if fe.IsDir() || filepath.Ext(fe.Name()) != ".jsonl" {
+				continue
+			}
+			info, err := fe.Info()
+			if err != nil {
+				continue
+			}
+			if info.ModTime().After(bestMod) {
+				bestMod = info.ModTime()
+				best = filepath.Join(dir, fe.Name())
+			}
+		}
+		if best != "" && !skip[best] && time.Since(bestMod) <= freshWindow {
+			fresh = append(fresh, cand{best, bestMod})
 		}
 	}
 	sort.Slice(fresh, func(i, j int) bool { return fresh[i].mod.After(fresh[j].mod) })
-	// newest fresh rollout whose session_meta cwd matches (cap the probes)
+	// newest fresh session whose first-line cwd matches (cap the probes)
 	for i, c := range fresh {
 		if i >= 8 {
 			break
 		}
-		if codexSessionCwd(c.path) == cwd {
+		if piSessionCwd(c.path) == cwd {
 			return c.path
 		}
 	}
 	return ""
 }
 
-// codexSessionCwd reads only the first line's session_meta.payload.cwd.
-func codexSessionCwd(path string) string {
+// piSessionCwd reads only the first line's cwd.
+func piSessionCwd(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
 		return ""
@@ -258,107 +320,222 @@ func codexSessionCwd(path string) string {
 		return ""
 	}
 	var meta struct {
-		Type    string `json:"type"`
-		Payload struct {
-			Cwd string `json:"cwd"`
-		} `json:"payload"`
+		Type string `json:"type"`
+		Cwd  string `json:"cwd"`
 	}
-	if json.Unmarshal(line, &meta) != nil || meta.Type != "session_meta" {
+	if json.Unmarshal(line, &meta) != nil || meta.Type != "session" {
 		return ""
 	}
-	return meta.Payload.Cwd
+	return meta.Cwd
 }
 
-type codexTracker struct {
-	path  string
-	base  Usage // cumulative counters at attach time (run deltas start here)
-	cur   Usage
-	model string
-	first bool
+type piTracker struct {
+	home    string
+	path    string
+	offset  int64
+	partial []byte // trailing incomplete line carried between reads
+	usage   Usage  // forward counters since attach (run deltas)
+	sess    SessionStats
+	model   string
+	seen    map[string]bool // message-id dedupe
+	seenQ   []string
 }
 
-func newCodexTracker(path string) *codexTracker {
-	t := &codexTracker{path: path, first: true}
-	t.Refresh()
+func newPiTracker(path, home string) *piTracker {
+	t := &piTracker{path: path, home: home, seen: map[string]bool{}}
+	t.seed()
 	return t
 }
 
-const codexTailBytes = 256 * 1024
+// piUsage decodes only the structural fields we need.
+type piUsage struct {
+	In         int64 `json:"input"`
+	Out        int64 `json:"output"`
+	CacheRead  int64 `json:"cacheRead"`
+	CacheWrite int64 `json:"cacheWrite"`
+	Total      int64 `json:"totalTokens"`
+	Cost       struct {
+		Total float64 `json:"total"`
+	} `json:"cost"`
+}
 
-func (t *codexTracker) Refresh() {
+// piLine decodes only the structural fields we need.
+type piLine struct {
+	Type     string   `json:"type"`
+	ID       string   `json:"id"`
+	ModelID  string   `json:"modelId"`  // model_change
+	Provider string   `json:"provider"` // model_change
+	Usage    *piUsage `json:"usage"`    // compaction / branch_summary
+	Message  struct {
+		Role  string   `json:"role"`
+		Model string   `json:"model"`
+		Usage *piUsage `json:"usage"`
+	} `json:"message"`
+}
+
+// seed parses the whole session file once: session-cumulative stats (like
+// the pi footer's totals) come from history; run deltas stay forward-only.
+func (t *piTracker) seed() {
+	f, err := os.Open(t.path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 64*1024*1024)) // bound one read
+	if err != nil {
+		return
+	}
+	lines := bytes.Split(data, []byte{'\n'})
+	for _, line := range lines[:len(lines)-1] {
+		t.apply(line, false)
+	}
+	// runs measure forward deltas from here
+	info, err := f.Stat()
+	if err == nil {
+		t.offset = info.Size()
+	}
+}
+
+// apply folds one session line into the session stats, and into the forward
+// counters too when count is true (post-attach lines).
+func (t *piTracker) apply(line []byte, count bool) {
+	if len(line) == 0 {
+		return
+	}
+	var u *piUsage
+	var role, msgModel, msgID string
+	switch {
+	case bytes.Contains(line, []byte(`"model_change"`)):
+		var pl piLine
+		if json.Unmarshal(line, &pl) == nil && pl.ModelID != "" {
+			t.model = pl.ModelID
+			if pl.Provider != "" {
+				t.sess.ContextWindow = piContextWindow(t.home, pl.Provider, pl.ModelID)
+			}
+		}
+		return
+	case bytes.Contains(line, []byte(`"usage"`)):
+		var pl piLine
+		if json.Unmarshal(line, &pl) != nil {
+			return
+		}
+		switch pl.Type {
+		case "message":
+			u, role, msgModel, msgID = pl.Message.Usage, pl.Message.Role, pl.Message.Model, pl.ID
+		case "compaction", "branch_summary":
+			u = pl.Usage
+		}
+	default:
+		return
+	}
+	if u == nil {
+		return
+	}
+	if msgModel != "" {
+		t.model = msgModel
+	}
+	if msgID != "" { // dedupe streamed updates (same message id repeats)
+		if t.seen[msgID] {
+			return
+		}
+		t.seen[msgID] = true
+		t.seenQ = append(t.seenQ, msgID)
+		if len(t.seenQ) > 2048 { // seeded history can be long
+			delete(t.seen, t.seenQ[0])
+			t.seenQ = t.seenQ[1:]
+		}
+	}
+	if count {
+		t.usage.In += u.In
+		t.usage.Out += u.Out
+		t.usage.CacheRead += u.CacheRead
+		t.usage.CacheWrite += u.CacheWrite
+	}
+	t.sess.In += u.In
+	t.sess.Out += u.Out
+	t.sess.CacheRead += u.CacheRead
+	t.sess.CacheWrite += u.CacheWrite
+	t.sess.CostUSD += u.Cost.Total
+	if role == "assistant" { // pi footer: hit rate and context track the LATEST request
+		if prompt := u.In + u.CacheRead + u.CacheWrite; prompt > 0 {
+			t.sess.CacheHit = 100 * float64(u.CacheRead) / float64(prompt)
+		}
+		if total := u.Total; total > 0 {
+			t.sess.ContextTokens = total
+		} else {
+			t.sess.ContextTokens = u.In + u.Out + u.CacheRead + u.CacheWrite
+		}
+	}
+}
+
+// piContextWindow resolves a model's context window from pi's own
+// models-store.json (provider -> models[] -> id -> contextWindow).
+func piContextWindow(home, provider, modelID string) int64 {
+	data, err := os.ReadFile(filepath.Join(home, ".pi", "agent", "models-store.json"))
+	if err != nil {
+		return 0
+	}
+	var store map[string]json.RawMessage
+	if json.Unmarshal(data, &store) != nil {
+		return 0
+	}
+	raw, ok := store[provider]
+	if !ok {
+		return 0
+	}
+	var found int64
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			if id, _ := x["id"].(string); id == modelID {
+				if cw, ok := x["contextWindow"].(float64); ok {
+					found = int64(cw)
+				}
+			}
+			for _, v2 := range x {
+				walk(v2)
+			}
+		case []any:
+			for _, v2 := range x {
+				walk(v2)
+			}
+		}
+	}
+	var v any
+	if json.Unmarshal(raw, &v) == nil {
+		walk(v)
+	}
+	return found
+}
+
+func (t *piTracker) Refresh() {
 	f, err := os.Open(t.path)
 	if err != nil {
 		return
 	}
 	defer f.Close()
 	info, err := f.Stat()
+	if err != nil || info.Size() <= t.offset {
+		return
+	}
+	if _, err := f.Seek(t.offset, io.SeekStart); err != nil {
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 32*1024*1024)) // bound one read
 	if err != nil {
 		return
 	}
-	start := info.Size() - codexTailBytes
-	if start < 0 {
-		start = 0
-	}
-	if _, err := f.Seek(start, io.SeekStart); err != nil {
-		return
-	}
-	data, err := io.ReadAll(io.LimitReader(f, codexTailBytes+1))
-	if err != nil {
-		return
-	}
+	t.offset += int64(len(data))
+	data = append(t.partial, data...)
 	lines := bytes.Split(data, []byte{'\n'})
-	if start > 0 && len(lines) > 1 {
-		lines = lines[1:] // first tail line is likely partial
-	}
-	var latest Usage
-	found := false
-	for _, line := range lines {
-		if len(line) == 0 {
-			continue
-		}
-		// cheap pre-filters keep full JSON decoding off most lines
-		switch {
-		case bytes.Contains(line, []byte(`"token_count"`)):
-			var ev struct {
-				Payload struct {
-					Info struct {
-						Total struct {
-							In     int64 `json:"input_tokens"`
-							Cached int64 `json:"cached_input_tokens"`
-							Out    int64 `json:"output_tokens"`
-						} `json:"total_token_usage"`
-					} `json:"info"`
-				} `json:"payload"`
-			}
-			if json.Unmarshal(line, &ev) == nil {
-				latest = Usage{
-					In:        ev.Payload.Info.Total.In,
-					Out:       ev.Payload.Info.Total.Out,
-					CacheRead: ev.Payload.Info.Total.Cached,
-				}
-				found = true
-			}
-		case bytes.Contains(line, []byte(`"turn_context"`)):
-			var tc struct {
-				Payload struct {
-					Model string `json:"model"`
-				} `json:"payload"`
-			}
-			if json.Unmarshal(line, &tc) == nil && tc.Payload.Model != "" {
-				t.model = tc.Payload.Model
-			}
-		}
-	}
-	if found {
-		if t.first {
-			// counters are cumulative for the whole session — everything
-			// before attach belongs to history we don't report
-			t.base = latest
-			t.first = false
-		}
-		t.cur = latest
+	t.partial = append([]byte(nil), lines[len(lines)-1]...) // may be incomplete
+	for _, line := range lines[:len(lines)-1] {
+		t.apply(line, true)
 	}
 }
 
-func (t *codexTracker) Usage() Usage  { return t.cur.Sub(t.base) }
-func (t *codexTracker) Model() string { return t.model }
+func (t *piTracker) Usage() Usage          { return t.usage }
+func (t *piTracker) Session() SessionStats { return t.sess }
+func (t *piTracker) Model() string         { return t.model }
+func (t *piTracker) Path() string          { return t.path }

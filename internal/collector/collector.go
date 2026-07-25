@@ -61,7 +61,10 @@ type Event struct {
 	TokensOut       int64     `json:"tokens_out,omitempty"`
 	TokensCacheR    int64     `json:"tokens_cache_read,omitempty"`
 	TokensCacheW    int64     `json:"tokens_cache_write,omitempty"`
-	Detail          string    `json:"detail,omitempty"`
+	// Session-cumulative stats for live views (run.usage only, never sent
+	// to the endpoint)
+	Session *harness.SessionStats `json:"session,omitempty"`
+	Detail  string                `json:"detail,omitempty"`
 }
 
 // RepoInfo is the git identity of the repository enclosing a pane's
@@ -87,6 +90,10 @@ type agentState struct {
 	// from the harness's session file — structural fields only, no content
 	sess       harness.Tracker
 	usageStart harness.Usage
+	// last per-run delta + session snapshot streamed to observers via run.usage
+	usageReported   harness.Usage
+	sessionReported harness.SessionStats
+	usageSent       bool // at least one run.usage streamed for this baseline
 }
 
 // repoInfo is the raw (unredacted) resolution cached per cwd. Privacy
@@ -554,6 +561,9 @@ func (c *Collector) pollAgents(seed bool) {
 					// (true start unknown) so live views see the open run
 					ev := c.agentEvent("run.started", a, "")
 					ev.RunStartedAt = st.runStart.UTC().Format(time.RFC3339)
+					if st.sess != nil {
+						ev.Model = st.sess.Model()
+					}
 					ev.Detail = "observed mid-run at daemon start"
 					c.emit(ev)
 				}
@@ -567,7 +577,18 @@ func (c *Collector) pollAgents(seed bool) {
 			}
 			prev.AgentStatus = a.AgentStatus
 		}
+		if agentSessionPath(prev.Agent) != agentSessionPath(a) {
+			// agent started a new session (e.g. pi /new): re-attach and
+			// re-baseline so stale counters never leak across sessions
+			prev.sess = nil
+			prev.usageSent = false
+			prev.AgentSession = a.AgentSession
+			if !prev.runStart.IsZero() {
+				prev.usageStart = c.ensureSession(prev)
+			}
+		}
 		prev.Cwd, prev.ForegroundCwd, prev.Focused = a.Cwd, a.ForegroundCwd, a.Focused
+		c.reportUsage(prev, a)
 	}
 	for k, st := range c.agents {
 		if !seen[k] {
@@ -589,13 +610,38 @@ func (c *Collector) ensureSession(st *agentState) harness.Usage {
 		cwd = st.Cwd
 	}
 	if st.sess == nil {
-		st.sess = harness.Attach(st.Agent.Agent, cwd, "")
+		if p := agentSessionPath(st.Agent); p != "" {
+			// exact match reported by herdr's agent integration
+			st.sess = harness.AttachPath(st.Agent.Agent, p, "")
+		} else {
+			st.sess = harness.Attach(st.Agent.Agent, cwd, "", c.sessionClaims(st))
+		}
 	}
 	if st.sess == nil {
 		return harness.Usage{}
 	}
 	st.sess.Refresh()
 	return st.sess.Usage()
+}
+
+// agentSessionPath returns the session file herdr reports for this agent.
+func agentSessionPath(a herdrapi.Agent) string {
+	if a.AgentSession != nil && a.AgentSession.Kind == "path" {
+		return a.AgentSession.Value
+	}
+	return ""
+}
+
+// sessionClaims returns the session files already attached by other agents,
+// so two agents sharing a cwd never read the same file.
+func (c *Collector) sessionClaims(self *agentState) map[string]bool {
+	skip := map[string]bool{}
+	for _, a := range c.agents {
+		if a != self && a.sess != nil {
+			skip[a.sess.Path()] = true
+		}
+	}
+	return skip
 }
 
 func applyUsage(ev *Event, model string, u harness.Usage) {
@@ -613,7 +659,11 @@ func (c *Collector) runTransition(st *agentState, now herdrapi.Agent) {
 	wasRunning := !st.runStart.IsZero()
 	if now.AgentStatus == "working" && !wasRunning {
 		st.runStart = time.Now()
+		st.sess = nil // re-resolve: the file being written now is this run's
 		st.usageStart = c.ensureSession(st)
+		st.usageReported = harness.Usage{}
+		st.sessionReported = harness.SessionStats{}
+		st.usageSent = false
 		ev := c.agentEvent("run.started", now, st.AgentStatus)
 		ev.RunStartedAt = st.runStart.UTC().Format(time.RFC3339)
 		if st.sess != nil {
@@ -642,9 +692,51 @@ func (c *Collector) finishRun(st *agentState, detail string) {
 	ev.RunDurationMS = dur.Milliseconds()
 	ev.Detail = detail
 	if cur := c.ensureSession(st); st.sess != nil {
-		applyUsage(&ev, st.sess.Model(), cur.Sub(st.usageStart))
+		delta := cur.Sub(st.usageStart)
+		applyUsage(&ev, st.sess.Model(), delta)
+		sess := st.sess.Session()
+		ev.Session = &sess
+		st.sessionReported = sess
+		if !delta.IsZero() {
+			st.usageReported = delta
+		}
 	}
 	c.emit(ev)
+}
+
+// reportUsage streams live per-run usage deltas plus session-cumulative
+// stats to WS observers only (never the sink): panels watch counters grow
+// during the run, session stats show even while idle, and session-file
+// writes that flush after run.finished still land as trailing updates.
+func (c *Collector) reportUsage(st *agentState, now herdrapi.Agent) {
+	if st.sess == nil {
+		// attach eagerly so idle agents show session stats too; run baselines
+		// are taken at run.started, so early attaches stay correct
+		c.ensureSession(st)
+		if st.sess == nil {
+			return
+		}
+	}
+	st.sess.Refresh()
+	cur := st.sess.Usage().Sub(st.usageStart)
+	if cur.IsZero() && st.usageSent {
+		return // counters regressed (session replaced) — never wipe
+	}
+	sess := st.sess.Session()
+	if st.usageSent && cur == st.usageReported && sess == st.sessionReported {
+		return // nothing new for the panel
+	}
+	st.usageReported = cur
+	st.sessionReported = sess
+	st.usageSent = true
+	ev := c.agentEvent("run.usage", now, "")
+	if !st.runStart.IsZero() {
+		ev.RunStartedAt = st.runStart.UTC().Format(time.RFC3339)
+		ev.RunDurationMS = time.Since(st.runStart).Milliseconds()
+	}
+	applyUsage(&ev, st.sess.Model(), cur)
+	ev.Session = &sess
+	c.observe(ev)
 }
 
 func (c *Collector) closeOpenRuns() {

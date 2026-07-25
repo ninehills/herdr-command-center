@@ -39,7 +39,7 @@ focus_intervals = false     # completed focus.interval + focus.changed events
                             #   (which pane the USER is looking at, and for how
                             #   long). Opt-in: reveals attention patterns.
 snapshot_interval_ms = 900000  # full-state snapshot every 15m (0 disables)
-min_run_ms = 30000          # runs shorter than this are ignored
+min_run_ms = 0               # runs shorter than this are ignored (0 = report every run)
 replay_grace_ms = 2000      # subscribe-time state replay suppression window
 session_usage = true        # model id + per-run token counters from harness
                             # session files (counters only, never content;

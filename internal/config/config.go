@@ -117,7 +117,7 @@ func Default() Config {
 			FocusEvents:        false,
 			FocusIntervals:     false,
 			SnapshotIntervalMS: 900000, // 15m full-state snapshot
-			MinRunMS:           30000,
+			MinRunMS:           0,
 			ReplayGraceMS:      2000,
 		},
 		Privacy: Privacy{

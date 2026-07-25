@@ -38,6 +38,18 @@ type agent struct {
 	RunDurationMS  int64  `json:"run_duration_ms"`
 	TokensIn       int64  `json:"tokens_in"`
 	TokensOut      int64  `json:"tokens_out"`
+	TokensCacheR   int64  `json:"tokens_cache_read"`
+	TokensCacheW   int64  `json:"tokens_cache_write"`
+	Session        *struct {
+		In            int64   `json:"in"`
+		Out           int64   `json:"out"`
+		CacheRead     int64   `json:"cache_read"`
+		CacheWrite    int64   `json:"cache_write"`
+		CostUSD       float64 `json:"cost_usd"`
+		CacheHit      float64 `json:"cache_hit"`
+		ContextTokens int64   `json:"context_tokens"`
+		ContextWindow int64   `json:"context_window"`
+	} `json:"session"`
 }
 
 type message struct {
@@ -241,7 +253,9 @@ func drawLoop(ctx context.Context, w io.Writer, endpoint string, updates <-chan 
 			}
 			if u.message != nil {
 				applyMessage(agents, *u.message)
-				events = appendEvent(events, formatEvent(*u.message))
+				if u.message.SourceKind != "run.usage" { // too frequent for the log; table still updates
+					events = appendEvent(events, formatEvent(*u.message))
+				}
 				updated = time.Now()
 			}
 			dirty = true
@@ -280,9 +294,10 @@ func formatEvent(msg message) string {
 	if msg.Agent.Model != "" {
 		parts = append(parts, "model="+msg.Agent.Model)
 	}
-	if msg.Agent.TokensIn != 0 || msg.Agent.TokensOut != 0 {
-		parts = append(parts, fmt.Sprintf("tokens=%d/%d", msg.Agent.TokensIn, msg.Agent.TokensOut))
+	if totalIn(msg.Agent) != 0 || msg.Agent.TokensOut != 0 {
+		parts = append(parts, fmt.Sprintf("tokens=%d/%d", totalIn(msg.Agent), msg.Agent.TokensOut))
 	}
+
 	if len(parts) > 0 {
 		line += "  " + strings.Join(parts, " ")
 	}
@@ -314,7 +329,7 @@ func render(w io.Writer, endpoint, state string, updated time.Time, agents map[s
 	if width < 70 {
 		fmt.Fprintln(w, "NAME             STATUS      WORKSPACE")
 	} else {
-		fmt.Fprintln(w, "NAME             STATUS      WORKSPACE          PANE          MODEL          TOKENS IN/OUT")
+		fmt.Fprintln(w, "NAME             STATUS      WORKSPACE          PANE          MODEL          INPUT   OUTPUT  CACHE READ  HIT      COST      CONTEXT")
 	}
 	rows := make([]agent, 0, len(agents))
 	for _, a := range agents {
@@ -332,7 +347,8 @@ func render(w io.Writer, endpoint, state string, updated time.Time, agents map[s
 		if width < 70 {
 			fmt.Fprintf(w, "%-16s %-11s %s\n", clip(name, 15), colored(a.Status), clip(a.WorkspaceLabel, max(8, width-30)))
 		} else {
-			fmt.Fprintf(w, "%-16s %-20s %-18s %-13s %-14s %s / %s\n", clip(name, 15), colored(a.Status), clip(a.WorkspaceLabel, 17), clip(a.PaneID, 12), clip(a.Model, 13), count(a.TokensIn), count(a.TokensOut))
+			in, out, cacheRead, hit, cost, ctx := sessionStats(a)
+			fmt.Fprintf(w, "%-16s %-20s %-18s %-13s %-14s %-7s %-7s %-10s %-8s %-9s %s\n", clip(name, 15), colored(a.Status), clip(a.WorkspaceLabel, 17), clip(a.PaneID, 12), clip(a.Model, 13), in, out, cacheRead, hit, cost, ctx)
 		}
 	}
 	// Event log fills the remaining terminal rows (header 2 + table header 1
@@ -376,6 +392,56 @@ func safeText(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// totalIn counts every input token: fresh input plus tokens served from or
+// written to the prompt cache (providers report the three separately).
+func totalIn(a agent) int64 { return a.TokensIn + a.TokensCacheR + a.TokensCacheW }
+
+// sessionStats renders session-cumulative stats as plain-English columns:
+// total input, output, cache read, latest-request cache hit rate, cost,
+// and context window usage. Missing data shows as "-".
+func sessionStats(a agent) (in, out, cacheRead, hit, cost, ctx string) {
+	in, out, cacheRead, hit, cost, ctx = "-", "-", "-", "-", "-", "-"
+	s := a.Session
+	if s == nil {
+		return
+	}
+	if s.In > 0 {
+		in = formatTokens(s.In)
+	}
+	if s.Out > 0 {
+		out = formatTokens(s.Out)
+	}
+	if s.CacheRead > 0 {
+		cacheRead = formatTokens(s.CacheRead)
+	}
+	if s.CacheHit > 0 {
+		hit = fmt.Sprintf("%.1f%%", s.CacheHit)
+	}
+	if s.CostUSD > 0 {
+		cost = fmt.Sprintf("$%.3f", s.CostUSD)
+	}
+	if s.ContextWindow > 0 {
+		ctx = fmt.Sprintf("%.1f%%/%s", 100*float64(s.ContextTokens)/float64(s.ContextWindow), formatTokens(s.ContextWindow))
+	}
+	return
+}
+
+// formatTokens matches pi's compact footer format.
+func formatTokens(n int64) string {
+	switch {
+	case n < 1000:
+		return strconv.FormatInt(n, 10)
+	case n < 10000:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	case n < 1000000:
+		return fmt.Sprintf("%dk", (n+500)/1000)
+	case n < 10000000:
+		return fmt.Sprintf("%.1fM", float64(n)/1000000)
+	default:
+		return fmt.Sprintf("%dM", (n+500000)/1000000)
+	}
 }
 
 func count(n int64) string {

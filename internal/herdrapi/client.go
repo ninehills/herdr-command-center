@@ -112,6 +112,16 @@ type Agent struct {
 	TabID         string `json:"tab_id"`
 	TerminalID    string `json:"terminal_id"`
 	WorkspaceID   string `json:"workspace_id"`
+	// AgentSession is reported by herdr's agent integrations: the exact
+	// session file this agent is writing (kind="path").
+	AgentSession *AgentSession `json:"agent_session,omitempty"`
+}
+
+type AgentSession struct {
+	Agent  string `json:"agent"`
+	Kind   string `json:"kind"`
+	Source string `json:"source"`
+	Value  string `json:"value"`
 }
 
 type Workspace struct {

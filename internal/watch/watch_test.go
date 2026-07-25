@@ -3,6 +3,7 @@ package watch
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -91,5 +92,28 @@ func TestAppendEventRingBuffer(t *testing.T) {
 	}
 	if len(events) != maxEventLog || events[0] != "event-50" || events[len(events)-1] != fmt.Sprintf("event-%d", maxEventLog+49) {
 		t.Fatalf("ring buffer wrong: len=%d first=%q last=%q", len(events), events[0], events[len(events)-1])
+	}
+}
+
+func TestSessionLineAndFormatTokens(t *testing.T) {
+	cases := map[int64]string{999: "999", 1500: "1.5k", 323000: "323k", 6800000: "6.8M", 1048576: "1.0M", 12000000: "12M"}
+	for in, want := range cases {
+		if got := formatTokens(in); got != want {
+			t.Fatalf("formatTokens(%d) = %q, want %q", in, got, want)
+		}
+	}
+	a := agent{}
+	if in, _, _, _, _, _ := sessionStats(a); in != "-" {
+		t.Fatalf("no session must show -, got %q", in)
+	}
+	msg := message{}
+	if err := json.Unmarshal([]byte(`{"v":1,"type":"agent.added","agent_id":"p:pi","agent":{"name":"pi","session":{"in":323000,"out":61000,"cache_read":6800000,"cost_usd":3.913,"cache_hit":99.7,"context_tokens":109000,"context_window":1000000}}}`), &msg); err != nil {
+		t.Fatal(err)
+	}
+	in, out, cacheRead, hit, cost, ctx := sessionStats(msg.Agent)
+	got := strings.Join([]string{in, out, cacheRead, hit, cost, ctx}, " ")
+	want := "323k 61k 6.8M 99.7% $3.913 10.9%/1.0M"
+	if got != want {
+		t.Fatalf("sessionStats = %q, want %q", got, want)
 	}
 }
