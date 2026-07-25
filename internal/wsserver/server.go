@@ -294,6 +294,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	case <-s.ctx.Done():
 		return
 	}
+	// Give fragile clients a beat to finish parsing the 101 upgrade response
+	// before snapshot frames arrive; frames coalesced with the handshake can
+	// be dropped by clients without a transport pushback buffer (e.g.
+	// esp_websocket_client on ESP32).
+	timer := time.NewTimer(50 * time.Millisecond)
+	select {
+	case <-timer.C:
+	case <-s.ctx.Done():
+		timer.Stop()
+		return
+	}
 	for _, b := range snapshot {
 		ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 		err := conn.Write(ctx, websocket.MessageText, b)
