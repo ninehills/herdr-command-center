@@ -1,4 +1,4 @@
-# herdr-telemetry runtime/build artifacts
+# herdr-command-center runtime/build artifacts
 bin/
 dist/
 *.log

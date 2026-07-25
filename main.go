@@ -1,13 +1,13 @@
-// herdr-telemetry — a herdr plugin that streams workspace/agent telemetry
+// herdr-command-center — a herdr plugin that streams workspace/agent telemetry
 // from the herdr socket API to a configurable HTTP endpoint.
 //
-//	herdr-telemetry daemon         run the collector in the foreground
-//	herdr-telemetry ensure-daemon  start the daemon if not already running
-//	herdr-telemetry status         show daemon + delivery status
-//	herdr-telemetry flush          ask the daemon to flush now
-//	herdr-telemetry stop           stop the daemon
-//	herdr-telemetry test           send a single test event to the endpoint
-//	herdr-telemetry print-config   print the effective configuration
+//	herdr-command-center daemon         run the collector in the foreground
+//	herdr-command-center ensure-daemon  start the daemon if not already running
+//	herdr-command-center status         show daemon + delivery status
+//	herdr-command-center flush          ask the daemon to flush now
+//	herdr-command-center stop           stop the daemon
+//	herdr-command-center test           send a single test event to the endpoint
+//	herdr-command-center print-config   print the effective configuration
 package main
 
 import (
@@ -19,12 +19,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DIodide/herdr-telemetry/internal/config"
-	"github.com/DIodide/herdr-telemetry/internal/daemon"
-	"github.com/DIodide/herdr-telemetry/internal/notify"
-	"github.com/DIodide/herdr-telemetry/internal/sink"
-	"github.com/DIodide/herdr-telemetry/internal/updater"
-	"github.com/DIodide/herdr-telemetry/internal/watch"
+	"github.com/ninehills/herdr-command-center/internal/config"
+	"github.com/ninehills/herdr-command-center/internal/daemon"
+	"github.com/ninehills/herdr-command-center/internal/notify"
+	"github.com/ninehills/herdr-command-center/internal/sink"
+	"github.com/ninehills/herdr-command-center/internal/updater"
+	"github.com/ninehills/herdr-command-center/internal/watch"
 )
 
 //go:embed VERSION
@@ -46,7 +46,7 @@ func main() {
 		}
 		return
 	case "version", "--version", "-V":
-		fmt.Println("herdr-telemetry", version)
+		fmt.Println("herdr-command-center", version)
 		return
 	}
 	cfg, cfgPath, err := config.Load()
@@ -80,7 +80,7 @@ func main() {
 	case "check-update":
 		checkUpdate(cfg)
 	case "notify-test":
-		notify.New(cfg.Notify).Notify(notify.Start, "herdr-telemetry", "notification test")
+		notify.New(cfg.Notify).Notify(notify.Start, "herdr-command-center", "notification test")
 		fmt.Println("notify sent (shows only if herdr [ui.toast] delivery is enabled)")
 	case "print-config":
 		fmt.Printf("# config file: %s\n", cfgPath)
@@ -126,7 +126,7 @@ func status(cfg config.Config, cfgPath string) {
 
 func testEvent(cfg config.Config) {
 	if cfg.Endpoint.URL == "" {
-		fatal(fmt.Errorf("no endpoint.url configured (set it in config.toml or HERDR_TELEMETRY_ENDPOINT)"))
+		fatal(fmt.Errorf("no endpoint.url configured (set it in config.toml or HERDR_COMMAND_CENTER_ENDPOINT)"))
 	}
 	out := sink.New(cfg)
 	out.Enqueue(map[string]any{
@@ -162,7 +162,7 @@ func checkUpdate(cfg config.Config) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `herdr-telemetry <command>
+	fmt.Fprintln(os.Stderr, `herdr-command-center <command>
 
 commands:
   daemon         run the collector in the foreground
@@ -179,6 +179,6 @@ commands:
 }
 
 func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "herdr-telemetry:", err)
+	fmt.Fprintln(os.Stderr, "herdr-command-center:", err)
 	os.Exit(1)
 }

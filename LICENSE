@@ -1,6 +1,12 @@
 MIT License
 
-Copyright (c) 2026 Ibraheem Amin
+This project is derived from herdr-telemetry
+(https://github.com/DIodide/herdr-telemetry), originally written by
+Ibraheem Amin and licensed under the MIT License. The original copyright
+notice and permission notice are retained below as required by that license.
+
+Copyright (c) 2026 Ibraheem Amin (herdr-telemetry)
+Copyright (c) 2026 ninehills (herdr-command-center)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

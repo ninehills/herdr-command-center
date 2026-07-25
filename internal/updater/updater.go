@@ -23,8 +23,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/DIodide/herdr-telemetry/internal/config"
-	"github.com/DIodide/herdr-telemetry/internal/notify"
+	"github.com/ninehills/herdr-command-center/internal/config"
+	"github.com/ninehills/herdr-command-center/internal/notify"
 )
 
 // Emitter enqueues a telemetry event (the sink's Enqueue).
@@ -106,7 +106,7 @@ func (u *Updater) checkOnce(ctx context.Context) {
 	}
 	u.logf("update available: %s → %s", u.version, latest)
 	u.emit("update.available", fmt.Sprintf("%s available (running %s)", latest, u.version))
-	u.notifier.Notify(notify.Update, "herdr-telemetry "+latest+" available",
+	u.notifier.Notify(notify.Update, "herdr-command-center "+latest+" available",
 		"updating from "+u.version)
 
 	bin := os.Getenv("HERDR_BIN_PATH")
@@ -128,11 +128,11 @@ func (u *Updater) apply(ctx context.Context, bin, tag string) {
 	if err != nil {
 		u.logf("update install failed: %v: %s", err, strings.TrimSpace(string(out)))
 		u.emit("update.failed", fmt.Sprintf("%s install failed: %v", tag, err))
-		u.notifier.Notify(notify.Update, "herdr-telemetry update failed", err.Error())
+		u.notifier.Notify(notify.Update, "herdr-command-center update failed", err.Error())
 		return
 	}
 	u.emit("update.applied", fmt.Sprintf("installed %s; restarting", tag))
-	u.notifier.Notify(notify.Update, "herdr-telemetry updated to "+tag, "restarting the collector")
+	u.notifier.Notify(notify.Update, "herdr-command-center updated to "+tag, "restarting the collector")
 
 	// Hand off to the freshly-installed binary: a detached restarter waits
 	// for this process to release the flock, then asks herdr to start the
@@ -145,7 +145,7 @@ func (u *Updater) apply(ctx context.Context, bin, tag string) {
 
 func (u *Updater) spawnRestart(bin string) {
 	// double-detached so it outlives this process's graceful shutdown
-	script := fmt.Sprintf("sleep 5; %q plugin action invoke herdr-telemetry.start", bin)
+	script := fmt.Sprintf("sleep 5; %q plugin action invoke herdr-command-center.start", bin)
 	cmd := exec.Command("sh", "-c", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
@@ -164,7 +164,7 @@ func (u *Updater) latestTag(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "herdr-telemetry-updater")
+	req.Header.Set("User-Agent", "herdr-command-center-updater")
 	req.Header.Set("Accept", "application/vnd.github+json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

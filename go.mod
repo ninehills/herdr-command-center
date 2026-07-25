@@ -1,4 +1,4 @@
-module github.com/DIodide/herdr-telemetry
+module github.com/ninehills/herdr-command-center
 
 go 1.25.0
 

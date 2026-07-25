@@ -14,7 +14,7 @@ case "$(uname -m)" in
   arm64 | aarch64) arch="arm64" ;;
   *) arch="$(uname -m)" ;;
 esac
-asset="herdr-telemetry_${os}_${arch}"
+asset="herdr-command-center_${os}_${arch}"
 base="https://github.com/${REPO}/releases/download/v${VERSION}"
 
 mkdir -p bin
@@ -26,28 +26,28 @@ sha256() {
 }
 
 if command -v curl >/dev/null 2>&1 &&
-  curl -fsSL "${base}/${asset}" -o bin/herdr-telemetry.dl 2>/dev/null; then
+  curl -fsSL "${base}/${asset}" -o bin/herdr-command-center.dl 2>/dev/null; then
   # verify against the release checksums when available
   if curl -fsSL "${base}/checksums.txt" -o bin/checksums.txt 2>/dev/null; then
     want="$(grep " ${asset}\$" bin/checksums.txt 2>/dev/null | cut -d' ' -f1 || true)"
-    got="$(sha256 bin/herdr-telemetry.dl)"
+    got="$(sha256 bin/herdr-command-center.dl)"
     if [ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ]; then
       echo "checksum mismatch for ${asset} (want ${want}, got ${got})" >&2
-      rm -f bin/herdr-telemetry.dl bin/checksums.txt
+      rm -f bin/herdr-command-center.dl bin/checksums.txt
       exit 1
     fi
     rm -f bin/checksums.txt
   fi
-  mv bin/herdr-telemetry.dl bin/herdr-telemetry
-  chmod +x bin/herdr-telemetry
-  echo "installed prebuilt herdr-telemetry v${VERSION} (${os}/${arch})"
+  mv bin/herdr-command-center.dl bin/herdr-command-center
+  chmod +x bin/herdr-command-center
+  echo "installed prebuilt herdr-command-center v${VERSION} (${os}/${arch})"
   exit 0
 fi
-rm -f bin/herdr-telemetry.dl
+rm -f bin/herdr-command-center.dl
 
 if command -v go >/dev/null 2>&1; then
   echo "no prebuilt binary for ${os}/${arch} at v${VERSION}; building from source"
-  go build -trimpath -ldflags "-s -w" -o bin/herdr-telemetry .
+  go build -trimpath -ldflags "-s -w" -o bin/herdr-command-center .
   exit 0
 fi
 

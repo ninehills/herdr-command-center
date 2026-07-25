@@ -1,4 +1,4 @@
-# herdr-telemetry
+# herdr-command-center
 
 > A [herdr](https://herdr.dev) plugin that streams your workspace & agent
 > activity to an endpoint you control.
@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 You run agents all day — Claude Code in one pane, Codex in another, herdr
-orchestrating the lot. `herdr-telemetry` watches that session and turns it
+orchestrating the lot. `herdr-command-center` watches that session and turns it
 into a clean event stream: which workspaces exist, which agents are running
 where, when a work run started, how long it took. POST it at a webhook,
 a serverless function, a KV store, your own dashboard — it's newline-
@@ -26,7 +26,7 @@ personal site, but generic by design: it's a telemetry pipe, not a product.
                     │ events.subscribe             │ agent.list / workspace.list
                     │ (lifecycle stream)           │ (adaptive polling diff)
              ┌──────▼──────────────────────────────▼──────┐
-             │            herdr-telemetry daemon          │
+             │            herdr-command-center daemon          │
              │  · lifecycle events (created/renamed/…)    │
              │  · agent status transitions                │
              │  · derived runs (working → idle, + timing) │
@@ -138,7 +138,7 @@ $ herdr plugin install ninehills/herdr-command-center
 Configure your endpoint:
 
 ```console
-$ $EDITOR "$(herdr plugin config-dir herdr-telemetry)/config.toml"
+$ $EDITOR "$(herdr plugin config-dir herdr-command-center)/config.toml"
 ```
 
 ```toml
@@ -151,10 +151,10 @@ Then start it (it also autostarts on the next workspace/pane/worktree
 creation via manifest hooks):
 
 ```console
-$ herdr plugin action invoke herdr-telemetry.start
-$ herdr plugin action invoke herdr-telemetry.test-endpoint
+$ herdr plugin action invoke herdr-command-center.start
+$ herdr plugin action invoke herdr-command-center.test-endpoint
 ok — sent 1 event to https://your-endpoint.example/ingest
-$ herdr plugin action invoke herdr-telemetry.status
+$ herdr plugin action invoke herdr-command-center.status
 daemon:   running (pid 41337)
 endpoint: https://your-endpoint.example/ingest
 sent:     212 events (214 enqueued, 2 buffered, 0 spooled, 0 dropped)
@@ -163,7 +163,7 @@ sent:     212 events (214 enqueued, 2 buffered, 0 spooled, 0 dropped)
 For quick experiments, environment variables beat editing config:
 
 ```console
-$ HERDR_TELEMETRY_ENDPOINT=http://localhost:8787/ingest herdr-telemetry daemon
+$ HERDR_COMMAND_CENTER_ENDPOINT=http://localhost:8787/ingest herdr-command-center daemon
 ```
 
 ## Configuration
@@ -262,13 +262,13 @@ path = "/events"
 auth_token = "change-me"
 ```
 
-`HERDR_TELEMETRY_WS_TOKEN` and `HERDR_TELEMETRY_WS_LISTEN` override the token
+`HERDR_COMMAND_CENTER_WS_TOKEN` and `HERDR_COMMAND_CENTER_WS_LISTEN` override the token
 and address. Clients must send `Authorization: Bearer <token>`; query-string
 tokens are not accepted. For example:
 
 ```console
 $ wscat -c ws://127.0.0.1:9745/events -H "Authorization: Bearer change-me"
-$ herdr-telemetry watch ws://127.0.0.1:9745/events --token change-me
+$ herdr-command-center watch ws://127.0.0.1:9745/events --token change-me
 ```
 
 Each text frame is protocol v1 JSON with type `agent.added`, `agent.updated`,
@@ -284,23 +284,23 @@ failures, and exits with `Ctrl-C`.
 The plugin binary doubles as a CLI (also exposed as herdr actions):
 
 ```
-herdr-telemetry daemon         run the collector in the foreground
-herdr-telemetry ensure-daemon  start the daemon if not already running
-herdr-telemetry status         show daemon + delivery status
-herdr-telemetry flush          flush the batch now
-herdr-telemetry stop           stop the daemon
-herdr-telemetry test           send a single test event
-herdr-telemetry check-update   check GitHub for a newer release
-herdr-telemetry notify-test    send a test herdr notification
-herdr-telemetry print-config   print the effective configuration
-herdr-telemetry watch URL --token TOKEN  live ANSI agent dashboard
+herdr-command-center daemon         run the collector in the foreground
+herdr-command-center ensure-daemon  start the daemon if not already running
+herdr-command-center status         show daemon + delivery status
+herdr-command-center flush          flush the batch now
+herdr-command-center stop           stop the daemon
+herdr-command-center test           send a single test event
+herdr-command-center check-update   check GitHub for a newer release
+herdr-command-center notify-test    send a test herdr notification
+herdr-command-center print-config   print the effective configuration
+herdr-command-center watch URL --token TOKEN  live ANSI agent dashboard
 ```
 
 ## Development
 
 ```console
 $ git clone https://github.com/ninehills/herdr-command-center && cd herdr-command-center
-$ go build -o bin/herdr-telemetry .
+$ go build -o bin/herdr-command-center .
 $ herdr plugin link "$PWD"       # no build step on linked plugins
 ```
 

@@ -16,12 +16,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/DIodide/herdr-telemetry/internal/collector"
-	"github.com/DIodide/herdr-telemetry/internal/config"
-	"github.com/DIodide/herdr-telemetry/internal/notify"
-	"github.com/DIodide/herdr-telemetry/internal/sink"
-	"github.com/DIodide/herdr-telemetry/internal/updater"
-	"github.com/DIodide/herdr-telemetry/internal/wsserver"
+	"github.com/ninehills/herdr-command-center/internal/collector"
+	"github.com/ninehills/herdr-command-center/internal/config"
+	"github.com/ninehills/herdr-command-center/internal/notify"
+	"github.com/ninehills/herdr-command-center/internal/sink"
+	"github.com/ninehills/herdr-command-center/internal/updater"
+	"github.com/ninehills/herdr-command-center/internal/wsserver"
 )
 
 // Version is set from main (the embedded VERSION) so the updater can compare
@@ -198,9 +198,9 @@ func Run(cfg config.Config) error {
 	out := sink.New(cfg)
 	out.SetOnState(func(down bool, detail string) {
 		if down {
-			notifier.Notify(notify.EndpointDown, "herdr-telemetry: endpoint unreachable", detail)
+			notifier.Notify(notify.EndpointDown, "herdr-command-center: endpoint unreachable", detail)
 		} else {
-			notifier.Notify(notify.EndpointUp, "herdr-telemetry: endpoint reachable", "delivery resumed")
+			notifier.Notify(notify.EndpointUp, "herdr-command-center: endpoint reachable", "delivery resumed")
 		}
 	})
 	go out.Run()
@@ -220,7 +220,7 @@ func Run(cfg config.Config) error {
 	up := updater.New(cfg.Update, Version, host, out, notifier, cancel, log.Printf)
 	go up.Run(ctx)
 
-	notifier.Notify(notify.Start, "herdr-telemetry started", "v"+Version)
+	notifier.Notify(notify.Start, "herdr-command-center started", "v"+Version)
 
 	heartbeat := func() {
 		writeStatus(Status{

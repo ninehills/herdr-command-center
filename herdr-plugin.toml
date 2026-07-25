@@ -1,5 +1,5 @@
-id = "herdr-telemetry"
-name = "Herdr Telemetry"
+id = "herdr-command-center"
+name = "Herdr Command Center"
 version = "0.3.0"
 min_herdr_version = "0.7.0"
 description = "Stream workspace and agent telemetry to your own endpoint"
@@ -13,42 +13,42 @@ command = ["sh", "scripts/fetch-or-build.sh"]
 # the daemon is a singleton — every hook is a cheap no-op when it's alive
 [[events]]
 on = "workspace.created"
-command = ["bin/herdr-telemetry", "ensure-daemon"]
+command = ["bin/herdr-command-center", "ensure-daemon"]
 
 [[events]]
 on = "pane.created"
-command = ["bin/herdr-telemetry", "ensure-daemon"]
+command = ["bin/herdr-command-center", "ensure-daemon"]
 
 [[events]]
 on = "worktree.created"
-command = ["bin/herdr-telemetry", "ensure-daemon"]
+command = ["bin/herdr-command-center", "ensure-daemon"]
 
 [[actions]]
 id = "start"
-title = "Telemetry: start daemon"
-command = ["bin/herdr-telemetry", "ensure-daemon"]
+title = "Command Center: start daemon"
+command = ["bin/herdr-command-center", "ensure-daemon"]
 
 [[actions]]
 id = "status"
-title = "Telemetry: status"
-command = ["bin/herdr-telemetry", "status"]
+title = "Command Center: status"
+command = ["bin/herdr-command-center", "status"]
 
 [[actions]]
 id = "flush"
-title = "Telemetry: flush now"
-command = ["bin/herdr-telemetry", "flush"]
+title = "Command Center: flush now"
+command = ["bin/herdr-command-center", "flush"]
 
 [[actions]]
 id = "test-endpoint"
-title = "Telemetry: send test event"
-command = ["bin/herdr-telemetry", "test"]
+title = "Command Center: send test event"
+command = ["bin/herdr-command-center", "test"]
 
 [[actions]]
 id = "check-update"
-title = "Telemetry: check for updates"
-command = ["bin/herdr-telemetry", "check-update"]
+title = "Command Center: check for updates"
+command = ["bin/herdr-command-center", "check-update"]
 
 [[actions]]
 id = "stop"
-title = "Telemetry: stop daemon"
-command = ["bin/herdr-telemetry", "stop"]
+title = "Command Center: stop daemon"
+command = ["bin/herdr-command-center", "stop"]

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DIodide/herdr-telemetry/internal/collector"
-	"github.com/DIodide/herdr-telemetry/internal/config"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/ninehills/herdr-command-center/internal/collector"
+	"github.com/ninehills/herdr-command-center/internal/config"
 )
 
 func TestWebSocketAuthSnapshotAndDelete(t *testing.T) {

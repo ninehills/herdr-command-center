@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/DIodide/herdr-telemetry/internal/config"
+	"github.com/ninehills/herdr-command-center/internal/config"
 )
 
 type Stats struct {

@@ -11,8 +11,8 @@ package notify
 import (
 	"time"
 
-	"github.com/DIodide/herdr-telemetry/internal/config"
-	"github.com/DIodide/herdr-telemetry/internal/herdrapi"
+	"github.com/ninehills/herdr-command-center/internal/config"
+	"github.com/ninehills/herdr-command-center/internal/herdrapi"
 )
 
 // Event classes; each maps to a config toggle in [notify].

@@ -58,7 +58,7 @@ type update struct {
 var errAuth = errors.New("authentication failed")
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, `usage: herdr-telemetry watch ws://host:port/path --token TOKEN
+	fmt.Fprintln(w, `usage: herdr-command-center watch ws://host:port/path --token TOKEN
 
 Options:
   --token string  WebSocket Bearer token (required)
@@ -310,7 +310,7 @@ func render(w io.Writer, endpoint, state string, updated time.Time, agents map[s
 		height = n
 	}
 	fmt.Fprint(w, "\x1b[H\x1b[2J")
-	fmt.Fprintf(w, "herdr-telemetry watch  %s  %s  agents: %d  updated: %s\n\n", clip(endpoint, max(16, width-62)), state, len(agents), updated.Format("15:04:05"))
+	fmt.Fprintf(w, "herdr-command-center watch  %s  %s  agents: %d  updated: %s\n\n", clip(endpoint, max(16, width-62)), state, len(agents), updated.Format("15:04:05"))
 	if width < 70 {
 		fmt.Fprintln(w, "NAME             STATUS      WORKSPACE")
 	} else {

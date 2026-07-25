@@ -23,11 +23,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DIodide/herdr-telemetry/internal/config"
-	"github.com/DIodide/herdr-telemetry/internal/harness"
-	"github.com/DIodide/herdr-telemetry/internal/herdrapi"
-	"github.com/DIodide/herdr-telemetry/internal/notify"
-	"github.com/DIodide/herdr-telemetry/internal/sink"
+	"github.com/ninehills/herdr-command-center/internal/config"
+	"github.com/ninehills/herdr-command-center/internal/harness"
+	"github.com/ninehills/herdr-command-center/internal/herdrapi"
+	"github.com/ninehills/herdr-command-center/internal/notify"
+	"github.com/ninehills/herdr-command-center/internal/sink"
 )
 
 // Event is the wire schema (v1). Fields are omitted when empty or disabled
@@ -491,7 +491,7 @@ func (c *Collector) pollAgents(seed bool) {
 			ev := c.base("collector.degraded")
 			ev.Detail = "agent.list failing repeatedly: " + err.Error()
 			c.out.Enqueue(ev)
-			c.notifier.Notify(notify.Degraded, "herdr-telemetry degraded",
+			c.notifier.Notify(notify.Degraded, "herdr-command-center degraded",
 				"can't reach the herdr socket")
 			// we can no longer trust that focus stayed put — close the open
 			// interval at the last good observation rather than counting the
@@ -503,7 +503,7 @@ func (c *Collector) pollAgents(seed bool) {
 	if c.pollErrs >= 5 {
 		ev := c.base("collector.recovered")
 		c.out.Enqueue(ev)
-		c.notifier.Notify(notify.Recovered, "herdr-telemetry recovered",
+		c.notifier.Notify(notify.Recovered, "herdr-command-center recovered",
 			"herdr socket reachable again")
 	}
 	c.pollErrs = 0

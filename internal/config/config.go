@@ -1,7 +1,7 @@
-// Package config loads and defaults herdr-telemetry's TOML configuration.
+// Package config loads and defaults herdr-command-center's TOML configuration.
 //
 // Config lives in HERDR_PLUGIN_CONFIG_DIR/config.toml when running as a herdr
-// plugin, or ~/.config/herdr-telemetry/config.toml otherwise. Every value has
+// plugin, or ~/.config/herdr-command-center/config.toml otherwise. Every value has
 // a safe default; the only thing you must set is endpoint.url.
 package config
 
@@ -152,7 +152,7 @@ func ConfigDir() string {
 	if err != nil {
 		base = filepath.Join(os.Getenv("HOME"), ".config")
 	}
-	return filepath.Join(base, "herdr-telemetry")
+	return filepath.Join(base, "herdr-command-center")
 }
 
 // StateDir resolves where runtime state (lock, spool, status) lives.
@@ -160,7 +160,7 @@ func StateDir() string {
 	if d := os.Getenv("HERDR_PLUGIN_STATE_DIR"); d != "" {
 		return d
 	}
-	return filepath.Join(os.Getenv("HOME"), ".local", "state", "herdr-telemetry")
+	return filepath.Join(os.Getenv("HOME"), ".local", "state", "herdr-command-center")
 }
 
 // Load reads config.toml (missing file is fine — defaults apply), then lets
@@ -171,16 +171,16 @@ func Load() (Config, string, error) {
 	if _, err := toml.DecodeFile(path, &cfg); err != nil && !os.IsNotExist(err) {
 		return cfg, path, fmt.Errorf("parse %s: %w", path, err)
 	}
-	if v := os.Getenv("HERDR_TELEMETRY_ENDPOINT"); v != "" {
+	if v := os.Getenv("HERDR_COMMAND_CENTER_ENDPOINT"); v != "" {
 		cfg.Endpoint.URL = v
 	}
-	if v := os.Getenv("HERDR_TELEMETRY_TOKEN"); v != "" {
+	if v := os.Getenv("HERDR_COMMAND_CENTER_TOKEN"); v != "" {
 		cfg.Endpoint.AuthToken = v
 	}
-	if v := os.Getenv("HERDR_TELEMETRY_WS_TOKEN"); v != "" {
+	if v := os.Getenv("HERDR_COMMAND_CENTER_WS_TOKEN"); v != "" {
 		cfg.WebSocket.AuthToken = v
 	}
-	if v := os.Getenv("HERDR_TELEMETRY_WS_LISTEN"); v != "" {
+	if v := os.Getenv("HERDR_COMMAND_CENTER_WS_LISTEN"); v != "" {
 		cfg.WebSocket.Listen = v
 	}
 	cfg.clamp()
