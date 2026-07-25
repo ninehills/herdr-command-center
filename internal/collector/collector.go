@@ -137,20 +137,30 @@ type Collector struct {
 	repoCache map[string]repoInfo
 	pollErrs  int
 	notifier  *notify.Notifier
+	// buffered(1): push-event bursts coalesce into one extra poll
+	pollNow chan struct{}
+	// pane-scoped status subscriptions follow the live pane set: poll
+	// goroutine writes, lifecycle stream goroutine reads
+	panesMu         sync.RWMutex
+	subscribedPanes map[string]bool
+	resub           chan struct{} // buffered(1): ask the stream to resubscribe
 }
 
 func New(cfg config.Config, out *sink.Sink, notifier *notify.Notifier, observer EventObserver) *Collector {
 	return &Collector{
-		cfg:       cfg,
-		api:       herdrapi.New(),
-		out:       out,
-		observer:  observer,
-		host:      hostID(cfg),
-		agents:    map[agentKey]*agentState{},
-		wsMeta:    map[string]herdrapi.Workspace{},
-		tabMeta:   map[string]herdrapi.Tab{},
-		repoCache: map[string]repoInfo{},
-		notifier:  notifier,
+		cfg:             cfg,
+		api:             herdrapi.New(),
+		out:             out,
+		observer:        observer,
+		host:            hostID(cfg),
+		agents:          map[agentKey]*agentState{},
+		wsMeta:          map[string]herdrapi.Workspace{},
+		tabMeta:         map[string]herdrapi.Tab{},
+		repoCache:       map[string]repoInfo{},
+		notifier:        notifier,
+		pollNow:         make(chan struct{}, 1),
+		subscribedPanes: map[string]bool{},
+		resub:           make(chan struct{}, 1),
 	}
 }
 
@@ -465,6 +475,10 @@ func (c *Collector) Run(ctx context.Context) {
 			return
 		case <-time.After(interval):
 			c.pollAgents(false)
+		case <-c.pollNow:
+			// herdr pushed an agent status change — poll now instead of
+			// waiting out the poll interval
+			c.pollAgents(false)
 		case <-snapshotC:
 			c.snapshot()
 		}
@@ -595,6 +609,31 @@ func (c *Collector) pollAgents(seed bool) {
 			c.emit(c.agentEvent("agent.gone", st.Agent, st.AgentStatus))
 			c.finishRun(st, "agent.gone")
 			delete(c.agents, k)
+		}
+	}
+	// keep the pane-scoped status subscriptions in sync with the live set
+	panes := make(map[string]bool, len(c.agents))
+	for k := range c.agents {
+		panes[k.paneID] = true
+	}
+	c.panesMu.Lock()
+	changed := len(panes) != len(c.subscribedPanes)
+	if !changed {
+		for p := range panes {
+			if !c.subscribedPanes[p] {
+				changed = true
+				break
+			}
+		}
+	}
+	if changed {
+		c.subscribedPanes = panes
+	}
+	c.panesMu.Unlock()
+	if changed {
+		select {
+		case c.resub <- struct{}{}:
+		default:
 		}
 	}
 }
@@ -938,6 +977,16 @@ func (c *Collector) subscriptions() []herdrapi.Subscription {
 	if c.cfg.Collect.Panes {
 		add("pane.created", "pane.closed", "pane.exited")
 	}
+	if c.cfg.Collect.Agents {
+		// push-based low latency: herdr notifies status changes as they
+		// happen; the poll loop stays as periodic reconciliation. The
+		// subscription is pane-scoped, so it follows the live pane set.
+		c.panesMu.RLock()
+		for paneID := range c.subscribedPanes {
+			subs = append(subs, herdrapi.Subscription{Type: "pane.agent_status_changed", PaneID: paneID})
+		}
+		c.panesMu.RUnlock()
+	}
 	if c.cfg.Collect.Worktrees {
 		add("worktree.created", "worktree.opened", "worktree.removed")
 	}
@@ -945,24 +994,55 @@ func (c *Collector) subscriptions() []herdrapi.Subscription {
 }
 
 func (c *Collector) streamLifecycle(ctx context.Context) {
-	subs := c.subscriptions()
-	if len(subs) == 0 {
-		return
-	}
 	backoff := time.Second
 	for ctx.Err() == nil {
+		subs := c.subscriptions()
+		if len(subs) == 0 {
+			// nothing to subscribe yet — wait for the pane set to change
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.resub:
+			}
+			continue
+		}
+		// pane set changes cancel the stream and force a resubscribe
+		streamCtx, cancel := context.WithCancel(ctx)
+		resubscribed := make(chan struct{})
+		go func() {
+			select {
+			case <-c.resub:
+				close(resubscribed)
+				cancel()
+			case <-streamCtx.Done():
+			}
+		}()
 		var connectedAt time.Time
-		err := c.api.Stream(ctx, subs,
+		err := c.api.Stream(streamCtx, subs,
 			func(t time.Time) { connectedAt = t; backoff = time.Second },
 			func(f herdrapi.EventFrame) {
 				// herdr replays current state on subscribe — swallow the burst
 				if time.Since(connectedAt) < c.cfg.ReplayGrace() {
 					return
 				}
+				if f.Event == "pane_agent_status_changed" {
+					// not a telemetry event — just poll the agent list now
+					select {
+					case c.pollNow <- struct{}{}:
+					default:
+					}
+					return
+				}
 				c.handleLifecycle(f)
 			})
+		cancel()
 		if ctx.Err() != nil {
 			return
+		}
+		select {
+		case <-resubscribed:
+			continue // pane set changed — resubscribe immediately
+		default:
 		}
 		log.Printf("event stream: %v (reconnecting in %s)", err, backoff)
 		select {
