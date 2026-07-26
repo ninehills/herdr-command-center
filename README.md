@@ -166,6 +166,33 @@ For quick experiments, environment variables beat editing config:
 $ HERDR_COMMAND_CENTER_ENDPOINT=http://localhost:8787/ingest herdr-command-center daemon
 ```
 
+### Watch agents live
+
+The plugin can also serve the live agent dashboard. Enable the WebSocket
+service in the same `config.toml` (a token is required), then restart:
+
+```toml
+[websocket]
+enabled = true
+listen = "127.0.0.1:9745"   # use 0.0.0.0:9745 to share on the LAN
+auth_token = "change-me"
+```
+
+```console
+$ herdr plugin action invoke herdr-command-center.stop
+$ herdr plugin action invoke herdr-command-center.start
+```
+
+The plugin binary doubles as the watch client — it lives at
+`bin/herdr-command-center` under the plugin root, but any release download
+works just as well, since `watch` only needs the WebSocket URL and token:
+
+```console
+$ herdr-command-center watch ws://127.0.0.1:9745/events --token change-me
+```
+
+See [Live WebSocket and watch](#live-websocket-and-watch) for details.
+
 ## Configuration
 
 Full reference in [`config.example.toml`](config.example.toml). The short
