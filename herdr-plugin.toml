@@ -10,6 +10,11 @@ platforms = ["linux", "macos"]
 # back to `go build` for local dev / unreleased platforms
 command = ["sh", "scripts/fetch-or-build.sh"]
 
+# start the daemon (and with it the WebSocket service, if enabled) as soon
+# as the herdr server starts — no need to wait for a lifecycle event
+[[startup]]
+command = ["bin/herdr-command-center", "ensure-daemon"]
+
 # the daemon is a singleton — every hook is a cheap no-op when it's alive
 [[events]]
 on = "workspace.created"

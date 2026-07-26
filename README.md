@@ -14,6 +14,10 @@ where, when a work run started, how long it took. POST it at a webhook,
 a serverless function, a KV store, your own dashboard — it's newline-
 delimited JSON to a URL you choose.
 
+It also speaks WebSocket: an authenticated live stream of every agent's
+status, model, token counters, cache hit rate, cost, and context usage —
+with a built-in `watch` TUI dashboard, usable locally or over the LAN.
+
 Built for things like a live *"what am I working on right now"* panel on a
 personal site, but generic by design: it's a telemetry pipe, not a product.
 
@@ -42,14 +46,15 @@ personal site, but generic by design: it's a telemetry pipe, not a product.
 - **Lifecycle** (workspaces, tabs, panes, worktrees) comes from a single
   long-lived `events.subscribe` connection. Herdr replays current state on
   subscribe; the daemon uses that replay to warm its cache without emitting.
-- **Agent activity** is derived by diffing cheap `agent.list` snapshots —
-  herdr has no wildcard pane subscriptions, and polling one local socket
-  call every few seconds is lighter than per-pane subscription churn.
-  Polling adapts: 5s while any agent is working, 30s when everything idles.
+- **Agent activity** is push-driven: the daemon subscribes to herdr's
+  per-pane `pane.agent_status_changed` events and polls `agent.list`
+  immediately when one arrives, so status changes surface in about a
+  second. A slower poll (5s while any agent is working, 30s when
+  everything idles) stays on as periodic reconciliation.
 - **Runs** are derived from status transitions: `working` starts a run,
   `idle`/`done` ends it (with duration); `blocked` pauses inside a run —
-  an agent waiting on your input is still mid-task. Sub-30s blips are
-  ignored (configurable).
+  an agent waiting on your input is still mid-task. Every run is reported
+  by default; set `collect.min_run_ms` to ignore short blips.
 
 ## What gets captured
 
@@ -107,14 +112,16 @@ Example event:
   scrape live terminal text — your prompt, transcript excerpts, and the model
   status line). Your prompts, agent output, and code never leave the machine.
 - **No keystrokes, no commands, no file contents.**
-- **No transcripts — counters only.** herdr 0.7.1 exposes no model or token
-  data over its socket, so the optional session-usage collector
-  (`collect.session_usage`, on by default) reads the harness's own session
-  files directly — and decodes **only structural fields**: token counters
-  (`usage` / `total_token_usage`) and the model id. Message content is never
-  inspected, stored, or forwarded; Claude readers attach at the current end
-  of the file so historical lines are never parsed at all, and Codex reads a
-  bounded tail. If even that is too close, `collect.session_usage = false`
+- **No transcripts — counters only.** The optional session-usage
+  collector (`collect.session_usage`, on by default) reads the harness's
+  own session files (Claude Code and Pi are supported) — and decodes
+  **only structural fields**: token counters, cost, and the model id.
+  Message content is never inspected, stored, or forwarded; Claude readers
+  attach at the current end of the file so historical lines are never
+  parsed at all, and Pi parses the file once at attach for
+  session-cumulative stats (counters only) before reading forward. When
+  herdr reports the exact session file (`agent_session`), it is used
+  directly. If even that is too close, `collect.session_usage = false`
   turns the whole collector off and the plugin goes back to never opening
   harness files.
 - **No user-focus firehose.** herdr's `pane.focused` *event* fires ~10×/sec
@@ -147,8 +154,11 @@ url = "https://your-endpoint.example/ingest"
 auth_token = "…"
 ```
 
-Then start it (it also autostarts on the next workspace/pane/worktree
-creation via manifest hooks):
+The daemon starts itself: the manifest registers a herdr **startup
+command**, so whenever the herdr server starts, the daemon (and the
+WebSocket service, if enabled) comes up with it — plus lifecycle hooks
+(`workspace/pane/worktree.created`) as a safety net. No manual start is
+needed after install; the actions below are for verification:
 
 ```console
 $ herdr plugin action invoke herdr-command-center.start
@@ -183,6 +193,10 @@ $ herdr plugin action invoke herdr-command-center.stop
 $ herdr plugin action invoke herdr-command-center.start
 ```
 
+That restart is only needed once, to pick up the config change — from then
+on the WebSocket service starts automatically together with the herdr
+server.
+
 The plugin binary doubles as the watch client — it lives at
 `bin/herdr-command-center` under the plugin root, but any release download
 works just as well, since `watch` only needs the WebSocket URL and token:
@@ -211,7 +225,8 @@ version:
 | `collect.poll_interval_ms` | `5000` | agent poll while working |
 | `collect.idle_poll_interval_ms` | `30000` | agent poll while idle |
 | `collect.runs` | `true` | derive `run.*` events |
-| `collect.min_run_ms` | `30000` | ignore shorter runs |
+| `collect.min_run_ms` | `0` | ignore runs shorter than this (`0` = report all) |
+| `collect.snapshot_interval_ms` | `900000` | full-state snapshot & WS reconciliation cadence |
 | `collect.repo` | `true` | attach git `repo` (root/name/branch/worktree) |
 | `collect.focus_events` | `false` | `workspace.focused` (noisy) |
 | `collect.focus_intervals` | `false` | `focus.interval` / `focus.changed` (user attention; opt-in) |
@@ -299,16 +314,17 @@ $ herdr-command-center watch ws://127.0.0.1:9745/events --token change-me
 ```
 
 Each text frame is protocol v1 JSON with type `agent.added`, `agent.updated`,
-or `agent.deleted`, plus `source_kind`, `agent_id`, and the privacy-shaped
-agent state. New clients first receive the hub's current agents as
-`agent.added` snapshots. Updates follow the collector poll cadence (5 seconds
-while working and 30 seconds while idle by default), rather than bypassing the
-collector. While a run is open, `source_kind: run.usage` frames stream the
-live per-run token counters (input/output/cache read/cache write) and model
-on every poll tick they change; these frames are observer-only and are never
-sent to the remote endpoint. `watch` uses a zero-dependency ANSI table with a
-cache-hit-rate column, reconnects after network failures, and exits with
-`Ctrl-C`. Every `collect.snapshot_interval_ms` (default 15 minutes) the hub
+`agent.deleted`, or `snapshot` (full state), plus `source_kind`, `agent_id`,
+and the privacy-shaped agent state. New clients first receive the hub's
+current agents as `agent.added` snapshots. Status changes arrive within
+about a second (push-driven), rather than waiting out a poll interval.
+While a run is open, `source_kind: run.usage` frames stream the live
+per-run token counters plus session-cumulative stats (input/output/cache
+read/cache write, cost, latest-request cache hit rate, context usage) on
+every poll tick they change; these frames are observer-only and are never
+sent to the remote endpoint. `watch` uses a zero-dependency ANSI table
+with plain-English INPUT / OUTPUT / CACHE READ / HIT / COST / CONTEXT
+columns, reconnects after network failures, and exits with `Ctrl-C`. Every `collect.snapshot_interval_ms` (default 15 minutes) the hub
 also reconciles against the collector's authoritative full state and
 broadcasts one `type: "snapshot"` frame carrying the entire agent map —
 clients replace their local state wholesale, so panels converge even if
@@ -349,14 +365,11 @@ works in any terminal inside a herdr session.
 
 - [x] git `repo` context (root/name/branch/worktree) on agent + snapshot events
 - [x] `focus.interval` / `focus.changed` — time-by-repo/workspace/agent usage
-- [ ] `agent.model` + `agent.session_usage` — **blocked on herdr:** requires a
-  sanctioned agent-session journal path from the socket API (herdr 0.7.1
-  exposes none, and its `agent.explain` previews scrape live terminal text we
-  refuse to read). Revisit if a future herdr surfaces a model/backend field or
-  a path we can parse counters-only from.
+- [x] `agent.model` + session stats (exact session file via herdr's
+  `agent_session`, counters-only reader for Claude Code and Pi)
 - [x] per-run model + token counters (counters-only session-file reader)
 - [ ] richer run context via `pane report-metadata` titles (opt-in)
-- [ ] `events.wait`-based low-latency mode behind a flag
+- [x] push-based low-latency agent status (`pane.agent_status_changed` subscriptions)
 - [x] prebuilt release binaries so Go isn't required at install
 - [ ] Windows support (named-pipe socket)
 
